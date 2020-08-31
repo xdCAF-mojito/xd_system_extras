@@ -28,6 +28,8 @@
 #include "read_apk.h"
 #include "test_util.h"
 
+using namespace simpleperf;
+
 static std::unique_ptr<Command> ReportCmd() {
   return CreateCommandInstance("report");
 }
@@ -493,6 +495,16 @@ TEST_F(ReportCommandTest, report_offcpu_time) {
 TEST_F(ReportCommandTest, report_big_trace_data) {
   Report(PERF_DATA_WITH_BIG_TRACE_DATA);
   ASSERT_TRUE(success);
+}
+
+TEST_F(ReportCommandTest, csv_option) {
+  Report(PERF_DATA, {"--csv"});
+  ASSERT_TRUE(success);
+  ASSERT_NE(content.find("EventCount,EventName"), std::string::npos);
+
+  Report(CALLGRAPH_FP_PERF_DATA, {"--children", "--csv"});
+  ASSERT_TRUE(success);
+  ASSERT_NE(content.find("AccEventCount,SelfEventCount,EventName"), std::string::npos);
 }
 
 #if defined(__linux__)

@@ -20,6 +20,8 @@
 #include "get_test_data.h"
 #include "test_util.h"
 
+using namespace simpleperf;
+
 static std::unique_ptr<Command> DumpCmd() {
   return CreateCommandInstance("dump");
 }
@@ -43,6 +45,14 @@ TEST(cmd_dump, dump_callchain_of_sample_records) {
   std::string data = capture.Finish();
   ASSERT_NE(data.find("[kernel.kallsyms][+ffffffc000086b4a]"), std::string::npos);
   ASSERT_NE(data.find("__ioctl (/system/lib64/libc.so[+70b6c])"), std::string::npos);
+}
+
+TEST(cmd_dump, dump_tracepoint_fields_of_sample_records) {
+  CaptureStdout capture;
+  ASSERT_TRUE(capture.Start());
+  ASSERT_TRUE(DumpCmd()->Run({GetTestData("perf_with_tracepoint_event.data")}));
+  std::string data = capture.Finish();
+  ASSERT_NE(data.find("prev_comm: sleep"), std::string::npos);
 }
 
 TEST(cmd_dump, etm_data) {

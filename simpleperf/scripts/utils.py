@@ -139,9 +139,9 @@ def is_executable_available(executable, option='--help'):
         return False
 
 DEFAULT_NDK_PATH = {
-    'darwin': 'Library/Android/sdk/ndk-bundle',
-    'linux': 'Android/Sdk/ndk-bundle',
-    'windows': 'AppData/Local/Android/sdk/ndk-bundle',
+    'darwin': 'Library/Android/sdk/ndk',
+    'linux': 'Android/Sdk/ndk',
+    'windows': 'AppData/Local/Android/sdk/ndk',
 }
 
 EXPECTED_TOOLS = {
@@ -172,18 +172,15 @@ def _get_binutils_path_in_ndk(toolname, arch, platform):
         arch = 'arm64'
     if arch == 'arm64':
         name = 'aarch64-linux-android-' + toolname
-        path = 'toolchains/llvm/prebuilt/%s-x86_64/bin/%s' % (platform, name)
     elif arch == 'arm':
         name = 'arm-linux-androideabi-' + toolname
-        path = 'toolchains/llvm/prebuilt/%s-x86_64/bin/%s' % (platform, name)
     elif arch == 'x86_64':
         name = 'x86_64-linux-android-' + toolname
-        path = 'toolchains/llvm/prebuilt/%s-x86_64/bin/%s' % (platform, name)
     elif arch == 'x86':
         name = 'i686-linux-android-' + toolname
-        path = 'toolchains/llvm/prebuilt/%s-x86_64/bin/%s' % (platform, name)
     else:
         log_fatal('unexpected arch %s' % arch)
+    path = 'toolchains/llvm/prebuilt/%s-x86_64/bin/%s' % (platform, name)
     return (name, path)
 
 def find_tool_path(toolname, ndk_path=None, arch=None):
@@ -215,9 +212,16 @@ def find_tool_path(toolname, ndk_path=None, arch=None):
     home = os.environ.get('HOMEPATH') if is_windows() else os.environ.get('HOME')
     if home:
         default_ndk_path = os.path.join(home, DEFAULT_NDK_PATH[platform].replace('/', os.sep))
-        path = os.path.join(default_ndk_path, path_in_ndk)
-        if is_executable_available(path, test_option):
-            return path
+        if os.path.isdir(default_ndk_path):
+            # Android Studio can install multiple ndk versions. Find the newest one.
+            ndk_version = None
+            for name in os.listdir(default_ndk_path):
+                if not ndk_version or ndk_version < name:
+                    ndk_version = name
+            if ndk_version:
+                path = os.path.join(default_ndk_path, ndk_version, path_in_ndk)
+                if is_executable_available(path, test_option):
+                    return path
 
     # 4. Find tool in $PATH.
     if is_executable_available(toolname_with_arch, test_option):

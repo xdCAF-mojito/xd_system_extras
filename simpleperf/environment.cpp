@@ -251,9 +251,10 @@ bool GetKernelBuildId(BuildId* build_id) {
   return result == ElfStatus::NO_ERROR;
 }
 
-bool GetModuleBuildId(const std::string& module_name, BuildId* build_id) {
-  std::string notefile = "/sys/module/" + module_name + "/notes/.note.gnu.build-id";
-  return GetBuildIdFromNoteFile(notefile, build_id);
+bool GetModuleBuildId(const std::string& module_name, BuildId* build_id,
+                      const std::string& sysfs_dir) {
+  std::string notefile = sysfs_dir + "/module/" + module_name + "/notes/.note.gnu.build-id";
+  return GetBuildIdFromNoteFile(notefile, build_id) == ElfStatus::NO_ERROR;
 }
 
 bool GetValidThreadsFromThreadString(const std::string& tid_str, std::set<pid_t>* tid_set) {
@@ -854,7 +855,7 @@ ScopedTempFiles::~ScopedTempFiles() {
 std::unique_ptr<TemporaryFile> ScopedTempFiles::CreateTempFile(bool delete_in_destructor) {
   CHECK(!tmp_dir_.empty());
   std::unique_ptr<TemporaryFile> tmp_file(new TemporaryFile(tmp_dir_));
-  CHECK_NE(tmp_file->fd, -1);
+  CHECK_NE(tmp_file->fd, -1) << "failed to create tmpfile under " << tmp_dir_;
   if (delete_in_destructor) {
     tmp_file->DoNotRemove();
     files_to_delete_.push_back(tmp_file->path);
@@ -951,4 +952,12 @@ const char* GetTraceFsDir() {
     }
   }
   return nullptr;
+}
+
+bool GetKernelVersion(int* major, int* minor) {
+  utsname uname_buf;
+  if (TEMP_FAILURE_RETRY(uname(&uname_buf)) != 0) {
+    return false;
+  }
+  return sscanf(uname_buf.release, "%d.%d", major, minor) == 2;
 }

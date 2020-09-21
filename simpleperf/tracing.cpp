@@ -16,9 +16,11 @@
 
 #include "tracing.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,24 @@ static void DetachFile(const char*& p, std::string& file,
   p += file_size;
 }
 
+static bool ReadTraceFsFile(const std::string& path, std::string* content, bool report_error = true) {
+  const char* tracefs_dir = GetTraceFsDir();
+  if (tracefs_dir == nullptr) {
+    if (report_error) {
+      LOG(ERROR) << "tracefs doesn't exist";
+    }
+    return false;
+  }
+  std::string full_path = tracefs_dir + path;
+  if (!android::base::ReadFileToString(full_path, content)) {
+    if (report_error) {
+      PLOG(ERROR) << "failed to read " << full_path;
+    }
+    return false;
+  }
+  return true;
+}
+
 struct TraceType {
   std::string system;
   std::string name;
@@ -101,24 +121,6 @@ class TracingFile {
   uint32_t GetPageSize() const { return page_size; }
 
  private:
-  bool ReadTraceFsFile(const std::string& path, std::string* content, bool report_error = true) {
-    const char* tracefs_dir = GetTraceFsDir();
-    if (tracefs_dir == nullptr) {
-      if (report_error) {
-        LOG(ERROR) << "tracefs doesn't exist";
-      }
-      return false;
-    }
-    std::string full_path = tracefs_dir + path;
-    if (!android::base::ReadFileToString(full_path, content)) {
-      if (report_error) {
-        PLOG(ERROR) << "failed to read " << full_path;
-      }
-      return false;
-    }
-    return true;
-  }
-
   char magic[10];
   std::string version;
   char endian;
@@ -325,36 +327,37 @@ static TracingField ParseTracingField(const std::string& s) {
   return field;
 }
 
+static TracingFormat ParseTracingFormat(const std::string& data) {
+  TracingFormat format;
+  std::vector<std::string> strs = android::base::Split(data, "\n");
+  FormatParsingState state = FormatParsingState::READ_NAME;
+  for (const auto& s : strs) {
+    if (state == FormatParsingState::READ_NAME) {
+      if (size_t pos = s.find("name:"); pos != std::string::npos) {
+        format.name = android::base::Trim(s.substr(pos + strlen("name:")));
+        state = FormatParsingState::READ_ID;
+      }
+    } else if (state == FormatParsingState::READ_ID) {
+      if (size_t pos = s.find("ID:"); pos != std::string::npos) {
+        format.id = strtoull(s.substr(pos + strlen("ID:")).c_str(), nullptr, 10);
+        state = FormatParsingState::READ_FIELDS;
+      }
+    } else if (state == FormatParsingState::READ_FIELDS) {
+      if (size_t pos = s.find("field:"); pos != std::string::npos) {
+        TracingField field = ParseTracingField(s);
+        format.fields.push_back(field);
+      }
+    }
+  }
+  return format;
+}
+
 std::vector<TracingFormat> TracingFile::LoadTracingFormatsFromEventFiles()
     const {
   std::vector<TracingFormat> formats;
   for (const auto& pair : event_format_files) {
-    TracingFormat format;
+    TracingFormat format = ParseTracingFormat(pair.second);
     format.system_name = pair.first;
-    std::vector<std::string> strs = android::base::Split(pair.second, "\n");
-    FormatParsingState state = FormatParsingState::READ_NAME;
-    for (const auto& s : strs) {
-      if (state == FormatParsingState::READ_NAME) {
-        size_t pos = s.find("name:");
-        if (pos != std::string::npos) {
-          format.name = android::base::Trim(s.substr(pos + strlen("name:")));
-          state = FormatParsingState::READ_ID;
-        }
-      } else if (state == FormatParsingState::READ_ID) {
-        size_t pos = s.find("ID:");
-        if (pos != std::string::npos) {
-          format.id =
-              strtoull(s.substr(pos + strlen("ID:")).c_str(), nullptr, 10);
-          state = FormatParsingState::READ_FIELDS;
-        }
-      } else if (state == FormatParsingState::READ_FIELDS) {
-        size_t pos = s.find("field:");
-        if (pos != std::string::npos) {
-          TracingField field = ParseTracingField(s);
-          format.fields.push_back(field);
-        }
-      }
-    }
     formats.push_back(format);
   }
   return formats;
@@ -428,4 +431,195 @@ bool GetTracingData(const std::vector<const EventType*>& event_types,
   }
   *data = tracing_file.BinaryFormat();
   return true;
+}
+
+namespace {
+
+// Briefly check if the filter format is acceptable by the kernel, which is described in
+// Documentation/trace/events.rst in the kernel. Also adjust quotes in string operands.
+//
+// filter := predicate_expr [logical_operator predicate_expr]*
+// predicate_expr := predicate | '!' predicate_expr | '(' filter ')'
+// predicate := field_name relational_operator value
+//
+// logical_operator := '&&' | '||'
+// relational_operator := numeric_operator | string_operator
+// numeric_operator := '==' | '!=' | '<' | '<=' | '>' | '>=' | '&'
+// string_operator := '==' | '!=' | '~'
+// value := int or string
+struct FilterFormatAdjuster {
+  FilterFormatAdjuster(bool use_quote) : use_quote(use_quote) {}
+
+  bool MatchFilter(const char*& p) {
+    bool ok = MatchPredicateExpr(p);
+    while (ok && *p != '\0') {
+      RemoveSpace(p);
+      if (strncmp(p, "||", 2) == 0 || strncmp(p, "&&", 2) == 0) {
+        CopyBytes(p, 2);
+        ok = MatchPredicateExpr(p);
+      } else {
+        break;
+      }
+    }
+    RemoveSpace(p);
+    return ok;
+  }
+
+  void RemoveSpace(const char*& p) {
+    size_t i = 0;
+    while (isspace(p[i])) {
+      i++;
+    }
+    if (i > 0) {
+      CopyBytes(p, i);
+    }
+  }
+
+  bool MatchPredicateExpr(const char*& p) {
+    RemoveSpace(p);
+    if (*p == '!') {
+      CopyBytes(p, 1);
+      return MatchPredicateExpr(p);
+    }
+    if (*p == '(') {
+      CopyBytes(p, 1);
+      bool ok = MatchFilter(p);
+      if (!ok) {
+        return false;
+      }
+      RemoveSpace(p);
+      if (*p != ')') {
+        return false;
+      }
+      CopyBytes(p, 1);
+      return true;
+    }
+    return MatchPredicate(p);
+  }
+
+  bool MatchPredicate(const char*& p) {
+    return MatchFieldName(p) && MatchRelationalOperator(p) && MatchValue(p);
+  }
+
+  bool MatchFieldName(const char*& p) {
+    RemoveSpace(p);
+    std::string name;
+    for (size_t i = 0; isalnum(p[i]) || p[i] == '_'; i++) {
+      name.push_back(p[i]);
+    }
+    CopyBytes(p, name.size());
+    if (name.empty()) {
+      return false;
+    }
+    used_fields.emplace(std::move(name));
+    return true;
+  }
+
+  bool MatchRelationalOperator(const char*& p) {
+    RemoveSpace(p);
+    // "==", "!=", "<", "<=", ">", ">=", "&", "~"
+    if (*p == '=' || *p == '!' || *p == '<' || *p == '>') {
+      if (p[1] == '=') {
+        CopyBytes(p, 2);
+        return true;
+      }
+    }
+    if (*p == '<' || *p == '>' || *p == '&' || *p == '~') {
+      CopyBytes(p, 1);
+      return true;
+    }
+    return false;
+  }
+
+  bool MatchValue(const char*& p) {
+    RemoveSpace(p);
+    // Match a string with quotes.
+    if (*p == '\'' || *p == '"') {
+      char quote = *p;
+      size_t len = 1;
+      while (p[len] != quote && p[len] != '\0') {
+        len++;
+      }
+      if (p[len] != quote) {
+        return false;
+      }
+      len++;
+      if (use_quote) {
+        CopyBytes(p, len);
+      } else {
+        p++;
+        CopyBytes(p, len - 2);
+        p++;
+      }
+      return true;
+    }
+    // Match an int value.
+    char* end;
+    errno = 0;
+    if (*p == '-') {
+      strtoll(p, &end, 0);
+    } else {
+      strtoull(p, &end, 0);
+    }
+    if (errno == 0 && end != p) {
+      CopyBytes(p, end - p);
+      return true;
+    }
+    // Match a string without quotes, stopping at ), &&, || or space.
+    size_t len = 0;
+    while (p[len] != '\0' && strchr(")&| \t", p[len]) == nullptr) {
+      len++;
+    }
+    if (len == 0) {
+      return false;
+    }
+    if (use_quote) {
+      adjusted_filter += '"';
+    }
+    CopyBytes(p, len);
+    if (use_quote) {
+      adjusted_filter += '"';
+    }
+    return true;
+  }
+
+  void CopyBytes(const char*& p, size_t len) {
+    adjusted_filter.append(p, len);
+    p += len;
+  }
+
+  const bool use_quote;
+  std::string adjusted_filter;
+  FieldNameSet used_fields;
+};
+
+}  // namespace
+
+std::optional<std::string> AdjustTracepointFilter(const std::string& filter, bool use_quote,
+                                                  FieldNameSet* used_fields) {
+  FilterFormatAdjuster adjuster(use_quote);
+  const char* p = filter.c_str();
+  if (!adjuster.MatchFilter(p) || *p != '\0') {
+    LOG(ERROR) << "format error in filter \"" << filter << "\" starting from \"" << p << "\"";
+    return std::nullopt;
+  }
+  *used_fields = std::move(adjuster.used_fields);
+  return std::move(adjuster.adjusted_filter);
+}
+
+std::optional<FieldNameSet> GetFieldNamesForTracepointEvent(const EventType& event) {
+  std::vector<std::string> strs = android::base::Split(event.name, ":");
+  if (strs.size() != 2) {
+    return {};
+  }
+  std::string data;
+  if (!ReadTraceFsFile("/events/" + strs[0] + "/" + strs[1] + "/format", &data, false)) {
+    return {};
+  }
+  TracingFormat format = ParseTracingFormat(data);
+  FieldNameSet names;
+  for (auto& field : format.fields) {
+    names.emplace(std::move(field.name));
+  }
+  return names;
 }

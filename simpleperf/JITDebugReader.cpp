@@ -424,15 +424,14 @@ const JITDebugReader::DescriptorsLocation* JITDebugReader::GetDescriptorsLocatio
   DescriptorsLocation& location = descriptors_location_cache_[art_lib_path];
 
   // Read libart.so to find the addresses of __jit_debug_descriptor and __dex_debug_descriptor.
-  uint64_t min_vaddr_in_file;
-  uint64_t file_offset;
-  ElfStatus status = ReadMinExecutableVirtualAddressFromElfFile(art_lib_path, BuildId(),
-                                                                &min_vaddr_in_file,
-                                                                &file_offset);
-  if (status != ElfStatus::NO_ERROR) {
-    LOG(ERROR) << "ReadMinExecutableVirtualAddress failed, status = " << status;
+  ElfStatus status;
+  auto elf = ElfFile::Open(art_lib_path, &status);
+  if (!elf) {
+    LOG(ERROR) << "failed to read min_exec_vaddr from " << art_lib_path << ": " << status;
     return nullptr;
   }
+  uint64_t file_offset;
+  uint64_t min_vaddr_in_file = elf->ReadMinExecutableVaddr(&file_offset);
   // min_vaddr_in_file is the min vaddr of executable segments. It may not be page aligned.
   // And dynamic linker will create map mapping to (segment.p_vaddr & PAGE_MASK).
   uint64_t aligned_segment_vaddr = min_vaddr_in_file & PAGE_MASK;
@@ -448,15 +447,14 @@ const JITDebugReader::DescriptorsLocation* JITDebugReader::GetDescriptorsLocatio
       dex_addr = symbol.vaddr - aligned_segment_vaddr;
     }
   };
-  if (ParseDynamicSymbolsFromElfFile(art_lib_path, callback) != ElfStatus::NO_ERROR) {
-    return nullptr;
-  }
+  elf->ParseDynamicSymbols(callback);
   if (jit_addr == 0u || dex_addr == 0u) {
     return nullptr;
   }
   location.relative_addr = std::min(jit_addr, dex_addr);
   location.size = std::max(jit_addr, dex_addr) +
-      (is_64bit ? sizeof(JITDescriptor64) : sizeof(JITDescriptor32)) - location.relative_addr;
+                  (is_64bit ? sizeof(JITDescriptor64) : sizeof(JITDescriptor32)) -
+                  location.relative_addr;
   if (location.size >= 4096u) {
     PLOG(WARNING) << "The descriptors_size is unexpected large: " << location.size;
   }
@@ -535,10 +533,10 @@ bool JITDebugReader::ReadNewCodeEntries(Process& process, const Descriptor& desc
   }
   if (descriptor.version == 2) {
     if (process.is_64bit) {
-      return ReadNewCodeEntriesImplV2<JITCodeEntry64V2>(
+      return ReadNewCodeEntriesImpl<JITCodeEntry64V2>(
           process, descriptor, last_action_timestamp, read_entry_limit, new_code_entries);
     }
-    return ReadNewCodeEntriesImplV2<JITCodeEntry32V2>(
+    return ReadNewCodeEntriesImpl<JITCodeEntry32V2>(
         process, descriptor, last_action_timestamp, read_entry_limit, new_code_entries);
   }
   return false;
@@ -552,7 +550,6 @@ bool JITDebugReader::ReadNewCodeEntriesImpl(Process& process, const Descriptor& 
   uint64_t current_entry_addr = descriptor.first_entry_addr;
   uint64_t prev_entry_addr = 0u;
   std::unordered_set<uint64_t> entry_addr_set;
-
   for (size_t i = 0u; i < read_entry_limit && current_entry_addr != 0u; ++i) {
     if (entry_addr_set.find(current_entry_addr) != entry_addr_set.end()) {
       // We enter a loop, which means a broken linked list.
@@ -572,46 +569,6 @@ bool JITDebugReader::ReadNewCodeEntriesImpl(Process& process, const Descriptor& 
       break;
     }
     if (entry.symfile_size > 0) {
-      CodeEntry code_entry;
-      code_entry.addr = current_entry_addr;
-      code_entry.symfile_addr = entry.symfile_addr;
-      code_entry.symfile_size = entry.symfile_size;
-      code_entry.timestamp = entry.register_timestamp;
-      new_code_entries->push_back(code_entry);
-    }
-    entry_addr_set.insert(current_entry_addr);
-    prev_entry_addr = current_entry_addr;
-    current_entry_addr = entry.next_addr;
-  }
-  return true;
-}
-
-// Temporary work around for patch "JIT mini-debug-info: Append packed entries towards end.", which
-// adds new entries at the end of the list and forces simpleperf to read the whole list.
-template <typename CodeEntryT>
-bool JITDebugReader::ReadNewCodeEntriesImplV2(Process& process, const Descriptor& descriptor,
-                                              uint64_t last_action_timestamp,
-                                              uint32_t /* read_entry_limit */,
-                                              std::vector<CodeEntry>* new_code_entries) {
-  uint64_t current_entry_addr = descriptor.first_entry_addr;
-  uint64_t prev_entry_addr = 0u;
-  std::unordered_set<uint64_t> entry_addr_set;
-  const size_t READ_ENTRY_LIMIT = 10000;  // to avoid endless loop
-
-  for (size_t i = 0u; i < READ_ENTRY_LIMIT && current_entry_addr != 0u; ++i) {
-    if (entry_addr_set.find(current_entry_addr) != entry_addr_set.end()) {
-      // We enter a loop, which means a broken linked list.
-      return false;
-    }
-    CodeEntryT entry;
-    if (!ReadRemoteMem(process, current_entry_addr, sizeof(entry), &entry)) {
-      return false;
-    }
-    if (entry.prev_addr != prev_entry_addr || !entry.Valid()) {
-      // A broken linked list
-      return false;
-    }
-    if (entry.symfile_size > 0 && entry.register_timestamp > last_action_timestamp) {
       CodeEntry code_entry;
       code_entry.addr = current_entry_addr;
       code_entry.symfile_addr = entry.symfile_addr;
@@ -660,7 +617,11 @@ void JITDebugReader::ReadJITCodeDebugInfo(Process& process,
       debug_info->emplace_back(process.pid, jit_entry.timestamp, symbol.vaddr, symbol.len,
                                tmp_file->path);
     };
-    ParseSymbolsFromElfFileInMemory(data.data(), jit_entry.symfile_size, callback);
+    ElfStatus status;
+    auto elf = ElfFile::Open(data.data(), jit_entry.symfile_size, &status);
+    if (elf) {
+      elf->ParseSymbols(callback);
+    }
   }
 }
 

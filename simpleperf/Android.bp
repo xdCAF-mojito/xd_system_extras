@@ -54,19 +54,6 @@ cc_defaults {
         "libz",
         "libziparchive",
     ],
-    target: {
-        // Required for LLVM.
-        darwin: {
-            host_ldlibs: [
-                "-lncurses",
-            ],
-        },
-        linux_glibc: {
-            host_ldlibs: [
-                "-lncurses",
-            ],
-        },
-    },
 }
 
 cc_library_static {
@@ -169,6 +156,7 @@ cc_defaults {
                 "libcutils",
                 "libprocinfo",
                 "libevent",
+                "libc++fs",
             ],
         },
         android: {
@@ -211,15 +199,8 @@ cc_defaults {
                 "libprocinfo",
                 "libunwindstack",
             ],
-        },
-        darwin: {
-            host_ldlibs: [
-                "-lncurses",
-            ],
-        },
-        linux_glibc: {
-            host_ldlibs: [
-                "-lncurses",
+            static_libs: [
+                "libc++fs",
             ],
         },
         host: {
@@ -268,6 +249,7 @@ cc_defaults {
         "cmd_report_sample.cpp",
         "command.cpp",
         "dso.cpp",
+        "etm_branch_list.proto",
         "event_attr.cpp",
         "event_type.cpp",
         "perf_regs.cpp",
@@ -353,6 +335,19 @@ cc_binary {
             ],
         },
     },
+}
+
+cc_library {
+    name: "libsimpleperf_profcollect",
+    defaults: [
+        "simpleperf_shared_libs",
+    ],
+    host_supported: false,
+    srcs: ["profcollect.cpp"],
+    export_include_dirs: ["include"],
+    static_libs: ["libsimpleperf",],
+    shared_libs: ["libLLVM_android",],
+    visibility: ["//system/extras/profcollectd:__subpackages__"],
 }
 
 // simpleperf released in ndk
@@ -543,6 +538,7 @@ cc_defaults {
         "record_test.cpp",
         "sample_tree_test.cpp",
         "thread_tree_test.cpp",
+        "tracing_test.cpp",
         "utils_test.cpp",
     ],
     target: {

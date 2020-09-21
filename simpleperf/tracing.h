@@ -17,6 +17,8 @@
 #ifndef SIMPLE_PERF_TRACING_H_
 #define SIMPLE_PERF_TRACING_H_
 
+#include <optional>
+#include <set>
 #include <vector>
 
 #include <android-base/logging.h>
@@ -103,5 +105,13 @@ class Tracing {
 
 bool GetTracingData(const std::vector<const EventType*>& event_types,
                     std::vector<char>* data);
+
+// use_quote: whether or not to use quotes in string operands
+// used_fields: field names used in the filter
+// Return adjusted filter on success, otherwise return std::nullopt.
+using FieldNameSet = std::set<std::string>;
+std::optional<std::string> AdjustTracepointFilter(const std::string& filter, bool use_quote,
+                                                  FieldNameSet* used_fields);
+std::optional<FieldNameSet> GetFieldNamesForTracepointEvent(const EventType& event);
 
 #endif  // SIMPLE_PERF_TRACING_H_

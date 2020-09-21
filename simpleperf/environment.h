@@ -62,7 +62,8 @@ bool GetThreadMmapsInProcess(pid_t pid, std::vector<ThreadMmap>* thread_mmaps);
 constexpr char DEFAULT_KERNEL_FILENAME_FOR_BUILD_ID[] = "[kernel.kallsyms]";
 
 bool GetKernelBuildId(BuildId* build_id);
-bool GetModuleBuildId(const std::string& module_name, BuildId* build_id);
+bool GetModuleBuildId(const std::string& module_name, BuildId* build_id,
+                      const std::string& sysfs_dir = "/sys");
 
 bool IsThreadAlive(pid_t tid);
 std::vector<pid_t> GetAllProcesses();
@@ -127,6 +128,7 @@ class ScopedTempFiles {
 bool SignalIsIgnored(int signo);
 // Return 0 if no android version.
 int GetAndroidVersion();
+bool GetKernelVersion(int* major, int* minor);
 
 constexpr int kAndroidVersionP = 9;
 

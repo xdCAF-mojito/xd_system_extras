@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include <android-base/file.h>
@@ -29,18 +30,21 @@
 #include <android-base/strings.h>
 
 #include "environment.h"
+#include "JITDebugReader.h"
 #include "read_apk.h"
 #include "read_dex_file.h"
 #include "read_elf.h"
 #include "utils.h"
 
+using android::base::EndsWith;
+using android::base::StartsWith;
 using namespace simpleperf;
 
 namespace simpleperf_dso_impl {
 
 std::string RemovePathSeparatorSuffix(const std::string& path) {
   // Don't remove path separator suffix for '/'.
-  if (android::base::EndsWith(path, OS_PATH_SEPARATOR) && path.size() > 1u) {
+  if (EndsWith(path, OS_PATH_SEPARATOR) && path.size() > 1u) {
     return path.substr(0, path.size() - 1);
   }
   return path;
@@ -174,7 +178,7 @@ std::string DebugElfFileFinder::FindDebugFile(const std::string& dso_path, bool 
 
 std::string DebugElfFileFinder::GetPathInSymFsDir(const std::string& path) {
   auto add_symfs_prefix = [&](const std::string& path) {
-    if (android::base::StartsWith(path, OS_PATH_SEPARATOR)) {
+    if (StartsWith(path, OS_PATH_SEPARATOR)) {
       return symfs_dir_ + path;
     }
     return symfs_dir_ + OS_PATH_SEPARATOR + path;
@@ -373,11 +377,13 @@ bool Dso::IsForJavaMethod() {
     return true;
   }
   if (type_ == DSO_ELF_FILE) {
-    // JIT symfiles for JITed Java methods are dumped as temporary files, whose name are in format
-    // "TemporaryFile-XXXXXX".
+    if (JITDebugReader::IsPathInJITSymFile(path_)) {
+      return true;
+    }
+    // JITDebugReader in old versions generates symfiles in 'TemporaryFile-XXXXXX'.
     size_t pos = path_.rfind('/');
     pos = (pos == std::string::npos) ? 0 : pos + 1;
-    return strncmp(&path_[pos], "TemporaryFile", strlen("TemporaryFile")) == 0;
+    return StartsWith(std::string_view(&path_[pos], path_.size() - pos), "TemporaryFile");
   }
   return false;
 }
@@ -484,6 +490,16 @@ class ElfDso : public Dso {
  public:
   ElfDso(const std::string& path, const std::string& debug_file_path)
       : Dso(DSO_ELF_FILE, path, debug_file_path) {}
+
+  std::string_view GetReportPath() const override {
+    if (JITDebugReader::IsPathInJITSymFile(path_)) {
+      if (path_.find(kJITAppCacheFile) != path_.npos) {
+        return "[JIT app cache]";
+      }
+      return "[JIT zygote cache]";
+    }
+    return path_;
+  }
 
   void SetMinExecutableVaddr(uint64_t min_vaddr, uint64_t file_offset) override {
     min_vaddr_ = min_vaddr;
@@ -677,6 +693,16 @@ class KernelModuleDso : public Dso {
   }
 };
 
+class SymbolMapFileDso : public Dso {
+ public:
+  SymbolMapFileDso(const std::string& path) : Dso(DSO_SYMBOL_MAP_FILE, path, path) {}
+
+  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t, uint64_t) override { return ip; }
+
+ protected:
+  std::vector<Symbol> LoadSymbols() override { return {}; }
+};
+
 class UnknownDso : public Dso {
  public:
   UnknownDso(const std::string& path) : Dso(DSO_UNKNOWN_FILE, path, path) {}
@@ -708,6 +734,8 @@ std::unique_ptr<Dso> Dso::CreateDso(DsoType dso_type, const std::string& dso_pat
     }
     case DSO_DEX_FILE:
       return std::unique_ptr<Dso>(new DexFileDso(dso_path, dso_path));
+    case DSO_SYMBOL_MAP_FILE:
+      return std::unique_ptr<Dso>(new SymbolMapFileDso(dso_path));
     case DSO_UNKNOWN_FILE:
       return std::unique_ptr<Dso>(new UnknownDso(dso_path));
     default:
@@ -731,6 +759,8 @@ const char* DsoTypeToString(DsoType dso_type) {
       return "dso_elf_file";
     case DSO_DEX_FILE:
       return "dso_dex_file";
+    case DSO_SYMBOL_MAP_FILE:
+      return "dso_symbol_map_file";
     default:
       return "unknown";
   }

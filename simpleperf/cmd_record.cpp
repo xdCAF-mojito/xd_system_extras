@@ -31,6 +31,7 @@
 #include <android-base/logging.h>
 #include <android-base/file.h>
 #include <android-base/parseint.h>
+#include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 #if defined(__ANDROID__)
@@ -49,6 +50,7 @@
 #include "OfflineUnwinder.h"
 #include "read_apk.h"
 #include "read_elf.h"
+#include "read_symbol_map.h"
 #include "record.h"
 #include "record_file.h"
 #include "thread_tree.h"
@@ -494,9 +496,12 @@ bool RecordCommand::PrepareRecording(Workload* workload) {
     // JIT symfiles are stored in temporary files, and are deleted after recording. But if
     // `-g --no-unwind` option is used, we want to keep symfiles to support unwinding in
     // the debug-unwind cmd.
-    bool keep_symfiles = dwarf_callchain_sampling_ && !unwind_dwarf_callchain_;
-    bool sync_with_records = clockid_ == "monotonic";
-    jit_debug_reader_.reset(new JITDebugReader(keep_symfiles, sync_with_records));
+    auto symfile_option = (dwarf_callchain_sampling_ && !unwind_dwarf_callchain_)
+                              ? JITDebugReader::SymFileOption::kKeepSymFiles
+                              : JITDebugReader::SymFileOption::kDropSymFiles;
+    auto sync_option = (clockid_ == "monotonic") ? JITDebugReader::SyncOption::kSyncWithRecords
+                                                 : JITDebugReader::SyncOption::kNoSync;
+    jit_debug_reader_.reset(new JITDebugReader(record_filename_, symfile_option, sync_option));
     // To profile java code, need to dump maps containing vdex files, which are not executable.
     event_selection_set_.SetRecordNotExecutableMaps(true);
   }
@@ -723,55 +728,11 @@ bool RecordCommand::PostProcessRecording(const std::vector<std::string>& args) {
 
 bool RecordCommand::ParseOptions(const std::vector<std::string>& args,
                                  std::vector<std::string>* non_option_args) {
-  static const std::unordered_map<OptionName, OptionFormat> option_formats = {
-      {"-a", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--addr-filter", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"--app", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"--aux-buffer-size", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"-b", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"-c", {OptionValueType::UINT, OptionType::ORDERED}},
-      {"--call-graph", {OptionValueType::STRING, OptionType::ORDERED}},
-      {"--callchain-joiner-min-matching-nodes", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--clockid", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"--cpu", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"--cpu-percent", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--duration", {OptionValueType::DOUBLE, OptionType::SINGLE}},
-      {"-e", {OptionValueType::STRING, OptionType::ORDERED}},
-      {"--exclude-perf", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--exit-with-parent", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"-f", {OptionValueType::UINT, OptionType::ORDERED}},
-      {"-g", {OptionValueType::NONE, OptionType::ORDERED}},
-      {"--group", {OptionValueType::STRING, OptionType::ORDERED}},
-      {"--in-app", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"-j", {OptionValueType::STRING, OptionType::MULTIPLE}},
-      {"-m", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--no-callchain-joiner", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--no-cut-samples", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--no-dump-kernel-symbols", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--no-dump-symbols", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--no-inherit", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--no-unwind", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"-o", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"--out-fd", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"-p", {OptionValueType::STRING, OptionType::MULTIPLE}},
-      {"--post-unwind", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--post-unwind=no", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--post-unwind=yes", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--size-limit", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--start_profiling_fd", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--stdio-controls-profiling", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--stop-signal-fd", {OptionValueType::UINT, OptionType::SINGLE}},
-      {"--symfs", {OptionValueType::STRING, OptionType::SINGLE}},
-      {"-t", {OptionValueType::STRING, OptionType::MULTIPLE}},
-      {"--tp-filter", {OptionValueType::STRING, OptionType::ORDERED}},
-      {"--trace-offcpu", {OptionValueType::NONE, OptionType::SINGLE}},
-      {"--tracepoint-events", {OptionValueType::STRING, OptionType::SINGLE}},
-  };
-
   OptionValueMap options;
   std::vector<std::pair<OptionName, OptionValue>> ordered_options;
 
-  if (!PreprocessOptions(args, option_formats, &options, &ordered_options, non_option_args)) {
+  if (!PreprocessOptions(args, GetRecordCmdOptionFormats(), &options, &ordered_options,
+                         non_option_args)) {
     return false;
   }
 
@@ -1445,8 +1406,8 @@ bool RecordCommand::ProcessJITDebugInfo(const std::vector<JITDebugInfo>& debug_i
     if (info.type == JITDebugInfo::JIT_DEBUG_JIT_CODE) {
       uint64_t timestamp = jit_debug_reader_->SyncWithRecords() ? info.timestamp
                                                                 : last_record_timestamp_;
-      Mmap2Record record(*attr_id.attr, false, info.pid, info.pid,
-                         info.jit_code_addr, info.jit_code_len, 0, map_flags::PROT_JIT_SYMFILE_MAP,
+      Mmap2Record record(*attr_id.attr, false, info.pid, info.pid, info.jit_code_addr,
+                         info.jit_code_len, info.file_offset, map_flags::PROT_JIT_SYMFILE_MAP,
                          info.file_path, attr_id.ids[0], timestamp);
       if (!ProcessRecord(&record)) {
         return false;
@@ -1673,6 +1634,25 @@ bool RecordCommand::JoinCallChains() {
   return reader->ReadDataSection(record_callback);
 }
 
+namespace {
+
+void LoadSymbolMapFile(int pid, const std::string& package, ThreadTree* thread_tree) {
+  // On Linux, symbol map files usually go to /tmp/perf-<pid>.map
+  // On Android, there is no directory where any process can create files.
+  // For now, use /data/local/tmp/perf-<pid>.map, which works for standalone programs,
+  // and /data/data/<package>/perf-<pid>.map, which works for apps.
+  auto path = package.empty()
+      ? android::base::StringPrintf("/data/local/tmp/perf-%d.map", pid)
+      : android::base::StringPrintf("/data/data/%s/perf-%d.map", package.c_str(), pid);
+
+  auto symbols = ReadSymbolMapFromFile(path);
+  if (!symbols.empty()) {
+    thread_tree->AddSymbolsForProcess(pid, &symbols);
+  }
+}
+
+}  // namespace
+
 bool RecordCommand::DumpAdditionalFeatures(
     const std::vector<std::string>& args) {
   // Read data section of perf.data to collect hit file information.
@@ -1682,11 +1662,17 @@ bool RecordCommand::DumpAdditionalFeatures(
     Dso::ReadKernelSymbolsFromProc();
     kernel_symbols_available = true;
   }
+  std::unordered_set<int> loaded_symbol_maps;
   std::vector<uint64_t> auxtrace_offset;
   auto callback = [&](const Record* r) {
     thread_tree_.Update(*r);
     if (r->type() == PERF_RECORD_SAMPLE) {
-      CollectHitFileInfo(*reinterpret_cast<const SampleRecord*>(r));
+      auto sample = reinterpret_cast<const SampleRecord*>(r);
+      // Symbol map files are available after recording. Load one for the process.
+      if (loaded_symbol_maps.insert(sample->tid_data.pid).second) {
+        LoadSymbolMapFile(sample->tid_data.pid, app_package_name_, &thread_tree_);
+      }
+      CollectHitFileInfo(*sample);
     } else if (r->type() == PERF_RECORD_AUXTRACE) {
       auto auxtrace = static_cast<const AuxTraceRecord*>(r);
       auxtrace_offset.emplace_back(auxtrace->location.file_offset - auxtrace->size());
@@ -1780,7 +1766,7 @@ bool RecordCommand::DumpBuildIdFeature() {
       }
       build_id_records.push_back(BuildIdRecord(true, UINT_MAX, build_id, path));
     } else if (dso->type() == DSO_ELF_FILE) {
-      if (dso->Path() == DEFAULT_EXECNAME_FOR_THREAD_MMAP) {
+      if (dso->Path() == DEFAULT_EXECNAME_FOR_THREAD_MMAP || dso->IsForJavaMethod()) {
         continue;
       }
       if (!GetBuildIdFromDsoPath(dso->Path(), &build_id)) {

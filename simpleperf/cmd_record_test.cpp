@@ -277,7 +277,9 @@ static bool InCloudAndroid() {
 #if defined(__ANDROID__)
   std::string prop_value = android::base::GetProperty("ro.build.flavor", "");
   if (android::base::StartsWith(prop_value, "cf_x86_phone") ||
-      android::base::StartsWith(prop_value, "aosp_cf_x86_phone")) {
+      android::base::StartsWith(prop_value, "aosp_cf_x86_phone") ||
+      android::base::StartsWith(prop_value, "cf_x86_64_phone") ||
+      android::base::StartsWith(prop_value, "aosp_cf_x86_64_phone")) {
     return true;
   }
 #endif
@@ -1033,21 +1035,18 @@ TEST(record_cmd, addr_filter_option) {
   filter = StringPrintf("filter 0x%" PRIx64 "-0x%" PRIx64 "@%s", addr, addr + 4,
                         sleep_exec_path.c_str());
   ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
-  // TODO: enable kernel addr test after getting "perf/core: Fix crash when using HW tracing kernel
-  // filters" to android kernel 4.14.
-  if (false) {
-    // kernel start
-    uint64_t fake_kernel_addr = (1ULL << 63);
-    filter = StringPrintf("start 0x%" PRIx64, fake_kernel_addr);
-    ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
-    // kernel stop
-    filter = StringPrintf("stop 0x%" PRIx64, fake_kernel_addr);
-    ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
-    // kernel range
-    filter =
-        StringPrintf("filter 0x%" PRIx64 "-0x%" PRIx64, fake_kernel_addr, fake_kernel_addr + 4);
-    ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
-  }
+  // If kernel panic, try backporting "perf/core: Fix crash when using HW tracing kernel
+  // filters".
+  // kernel start
+  uint64_t fake_kernel_addr = (1ULL << 63);
+  filter = StringPrintf("start 0x%" PRIx64, fake_kernel_addr);
+  ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
+  // kernel stop
+  filter = StringPrintf("stop 0x%" PRIx64, fake_kernel_addr);
+  ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
+  // kernel range
+  filter = StringPrintf("filter 0x%" PRIx64 "-0x%" PRIx64, fake_kernel_addr, fake_kernel_addr + 4);
+  ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--addr-filter", filter}));
 }
 
 TEST(record_cmd, pmu_event_option) {

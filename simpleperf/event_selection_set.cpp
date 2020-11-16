@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <thread>
+#include <unordered_map>
 
 #include <android-base/logging.h>
 #include <android-base/stringprintf.h>
@@ -321,6 +322,18 @@ std::vector<EventAttrWithId> EventSelectionSet::GetEventAttrWithId() const {
   return result;
 }
 
+std::unordered_map<uint64_t, std::string> EventSelectionSet::GetEventNamesById() const {
+  std::unordered_map<uint64_t, std::string> result;
+  for (const auto& group : groups_) {
+    for (const auto& selection : group) {
+      for (const auto& fd : selection.event_fds) {
+        result[fd->Id()] = selection.event_type_modifier.name;
+      }
+    }
+  }
+  return result;
+}
+
 // Union the sample type of different event attrs can make reading sample
 // records in perf.data easier.
 void EventSelectionSet::UnionSampleType() {
@@ -473,6 +486,15 @@ void EventSelectionSet::SetRecordNotExecutableMaps(bool record) {
 
 bool EventSelectionSet::RecordNotExecutableMaps() const {
   return groups_[0][0].event_attr.mmap_data == 1;
+}
+
+void EventSelectionSet::WakeupPerSample() {
+  for (auto& group : groups_) {
+    for (auto& selection : group) {
+      selection.event_attr.watermark = 0;
+      selection.event_attr.wakeup_events = 1;
+    }
+  }
 }
 
 bool EventSelectionSet::SetTracepointFilter(const std::string& filter) {

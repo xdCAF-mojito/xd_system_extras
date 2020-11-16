@@ -114,6 +114,7 @@ class EventSelectionSet {
   bool ExcludeKernel() const;
   bool HasAuxTrace() const { return has_aux_trace_; }
   std::vector<EventAttrWithId> GetEventAttrWithId() const;
+  std::unordered_map<uint64_t, std::string> GetEventNamesById() const;
 
   void SetEnableOnExec(bool enable);
   bool GetEnableOnExec();
@@ -127,6 +128,7 @@ class EventSelectionSet {
   bool NeedKernelSymbol() const;
   void SetRecordNotExecutableMaps(bool record);
   bool RecordNotExecutableMaps() const;
+  void WakeupPerSample();
   void SetAddrFilters(std::vector<AddrFilter>&& filters) { addr_filters_ = std::move(filters); }
   bool SetTracepointFilter(const std::string& filter);
 

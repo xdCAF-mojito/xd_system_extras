@@ -34,10 +34,11 @@
 #include <regex>
 #include <thread>
 
+#include "ETMRecorder.h"
+#include "ProbeEvents.h"
 #include "cmd_record_impl.h"
 #include "command.h"
 #include "environment.h"
-#include "ETMRecorder.h"
 #include "event_selection_set.h"
 #include "get_test_data.h"
 #include "record.h"
@@ -58,8 +59,7 @@ static const char* GetDefaultEvent() {
   return HasHardwareCounter() ? "cpu-cycles" : "task-clock";
 }
 
-static bool RunRecordCmd(std::vector<std::string> v,
-                         const char* output_file = nullptr) {
+static bool RunRecordCmd(std::vector<std::string> v, const char* output_file = nullptr) {
   bool has_event = false;
   for (auto& arg : v) {
     if (arg == "-e" || arg == "--group") {
@@ -134,8 +134,8 @@ TEST(record_cmd, freq_option) {
 
 TEST(record_cmd, multiple_freq_or_sample_period_option) {
   TemporaryFile tmpfile;
-  ASSERT_TRUE(RunRecordCmd({"-f", "99", "-e", "task-clock", "-c", "1000000", "-e",
-                            "cpu-clock"}, tmpfile.path));
+  ASSERT_TRUE(RunRecordCmd({"-f", "99", "-e", "task-clock", "-c", "1000000", "-e", "cpu-clock"},
+                           tmpfile.path));
   CheckEventType(tmpfile.path, "task-clock", 0, 99u);
   CheckEventType(tmpfile.path, "cpu-clock", 1000000u, 0u);
 }
@@ -148,16 +148,14 @@ TEST(record_cmd, output_file_option) {
 TEST(record_cmd, dump_kernel_mmap) {
   TemporaryFile tmpfile;
   ASSERT_TRUE(RunRecordCmd({}, tmpfile.path));
-  std::unique_ptr<RecordFileReader> reader =
-      RecordFileReader::CreateInstance(tmpfile.path);
+  std::unique_ptr<RecordFileReader> reader = RecordFileReader::CreateInstance(tmpfile.path);
   ASSERT_TRUE(reader != nullptr);
   std::vector<std::unique_ptr<Record>> records = reader->DataSection();
   ASSERT_GT(records.size(), 0U);
   bool have_kernel_mmap = false;
   for (auto& record : records) {
     if (record->type() == PERF_RECORD_MMAP) {
-      const MmapRecord* mmap_record =
-          static_cast<const MmapRecord*>(record.get());
+      const MmapRecord* mmap_record = static_cast<const MmapRecord*>(record.get());
       if (strcmp(mmap_record->filename, DEFAULT_KERNEL_MMAP_NAME) == 0 ||
           strcmp(mmap_record->filename, DEFAULT_KERNEL_MMAP_NAME_PERF) == 0) {
         have_kernel_mmap = true;
@@ -171,12 +169,10 @@ TEST(record_cmd, dump_kernel_mmap) {
 TEST(record_cmd, dump_build_id_feature) {
   TemporaryFile tmpfile;
   ASSERT_TRUE(RunRecordCmd({}, tmpfile.path));
-  std::unique_ptr<RecordFileReader> reader =
-      RecordFileReader::CreateInstance(tmpfile.path);
+  std::unique_ptr<RecordFileReader> reader = RecordFileReader::CreateInstance(tmpfile.path);
   ASSERT_TRUE(reader != nullptr);
   const FileHeader& file_header = reader->FileHeader();
-  ASSERT_TRUE(file_header.features[FEAT_BUILD_ID / 8] &
-              (1 << (FEAT_BUILD_ID % 8)));
+  ASSERT_TRUE(file_header.features[FEAT_BUILD_ID / 8] & (1 << (FEAT_BUILD_ID % 8)));
   ASSERT_GT(reader->FeatureSectionDescriptors().size(), 0u);
 }
 
@@ -249,108 +245,6 @@ TEST(record_cmd, system_wide_fp_callchain_sampling) {
   TEST_IN_ROOT(ASSERT_TRUE(RunRecordCmd({"-a", "--call-graph", "fp"})));
 }
 
-bool IsInNativeAbi() {
-  static int in_native_abi = -1;
-  if (in_native_abi == -1) {
-    FILE* fp = popen("uname -m", "re");
-    char buf[40];
-    memset(buf, '\0', sizeof(buf));
-    CHECK_EQ(fgets(buf, sizeof(buf), fp), buf);
-    pclose(fp);
-    std::string s = buf;
-    in_native_abi = 1;
-    if (GetBuildArch() == ARCH_X86_32 || GetBuildArch() == ARCH_X86_64) {
-      if (s.find("86") == std::string::npos) {
-        in_native_abi = 0;
-      }
-    } else if (GetBuildArch() == ARCH_ARM || GetBuildArch() == ARCH_ARM64) {
-      if (s.find("arm") == std::string::npos && s.find("aarch64") == std::string::npos) {
-        in_native_abi = 0;
-      }
-    }
-  }
-  return in_native_abi == 1;
-}
-
-static bool InCloudAndroid() {
-#if defined(__i386__) || defined(__x86_64__)
-#if defined(__ANDROID__)
-  std::string prop_value = android::base::GetProperty("ro.build.flavor", "");
-  if (android::base::StartsWith(prop_value, "cf_x86_phone") ||
-      android::base::StartsWith(prop_value, "aosp_cf_x86_phone") ||
-      android::base::StartsWith(prop_value, "cf_x86_64_phone") ||
-      android::base::StartsWith(prop_value, "aosp_cf_x86_64_phone")) {
-    return true;
-  }
-#endif
-#endif
-  return false;
-}
-
-bool HasTracepointEvents() {
-  static int has_tracepoint_events = -1;
-  if (has_tracepoint_events == -1) {
-    // Cloud Android doesn't support tracepoint events.
-    has_tracepoint_events = InCloudAndroid() ? 0 : 1;
-  }
-  return has_tracepoint_events == 1;
-}
-
-#if defined(__arm__)
-// Check if we can get a non-zero instruction event count by monitoring current thread.
-static bool HasNonZeroInstructionEventCount() {
-  const EventType* type = FindEventTypeByName("instructions", false);
-  if (type == nullptr) {
-    return false;
-  }
-  perf_event_attr attr = CreateDefaultPerfEventAttr(*type);
-  std::unique_ptr<EventFd> event_fd =
-      EventFd::OpenEventFile(attr, gettid(), -1, nullptr, type->name, false);
-  if (!event_fd) {
-    return false;
-  }
-  // do some cpu work.
-  for (volatile int i = 0; i < 100000; ++i) {
-  }
-  PerfCounter counter;
-  if (event_fd->ReadCounter(&counter)) {
-    return counter.value != 0;
-  }
-  return false;
-}
-#endif  // defined(__arm__)
-
-bool HasHardwareCounter() {
-  static int has_hw_counter = -1;
-  if (has_hw_counter == -1) {
-    // Cloud Android doesn't have hardware counters.
-    has_hw_counter = InCloudAndroid() ? 0 : 1;
-#if defined(__arm__)
-    // For arm32 devices, external non-invasive debug signal controls PMU counters. Once it is
-    // disabled for security reason, we always get zero values for PMU counters. And we want to
-    // skip hardware counter tests once we detect it.
-    has_hw_counter &= HasNonZeroInstructionEventCount() ? 1 : 0;
-#endif
-  }
-  return has_hw_counter == 1;
-}
-
-bool HasPmuCounter() {
-  static int has_pmu_counter = -1;
-  if (has_pmu_counter == -1) {
-    has_pmu_counter = 0;
-    auto callback = [&](const EventType& event_type) {
-      if (event_type.IsPmuEvent()) {
-        has_pmu_counter = 1;
-        return false;
-      }
-      return true;
-    };
-    EventTypeManager::Instance().ForEachType(callback);
-  }
-  return has_pmu_counter == 1;
-}
-
 TEST(record_cmd, dwarf_callchain_sampling) {
   OMIT_TEST_ON_NON_NATIVE_ABIS();
   ASSERT_TRUE(IsDwarfCallChainSamplingSupported());
@@ -390,8 +284,8 @@ TEST(record_cmd, post_unwind_option) {
 TEST(record_cmd, existing_processes) {
   std::vector<std::unique_ptr<Workload>> workloads;
   CreateProcesses(2, &workloads);
-  std::string pid_list = android::base::StringPrintf(
-      "%d,%d", workloads[0]->GetPid(), workloads[1]->GetPid());
+  std::string pid_list =
+      android::base::StringPrintf("%d,%d", workloads[0]->GetPid(), workloads[1]->GetPid());
   ASSERT_TRUE(RunRecordCmd({"-p", pid_list}));
 }
 
@@ -399,8 +293,8 @@ TEST(record_cmd, existing_threads) {
   std::vector<std::unique_ptr<Workload>> workloads;
   CreateProcesses(2, &workloads);
   // Process id can also be used as thread id in linux.
-  std::string tid_list = android::base::StringPrintf(
-      "%d,%d", workloads[0]->GetPid(), workloads[1]->GetPid());
+  std::string tid_list =
+      android::base::StringPrintf("%d,%d", workloads[0]->GetPid(), workloads[1]->GetPid());
   ASSERT_TRUE(RunRecordCmd({"-t", tid_list}));
 }
 
@@ -421,11 +315,9 @@ TEST(record_cmd, mmap_page_option) {
   ASSERT_FALSE(RunRecordCmd({"-m", "7"}));
 }
 
-static void CheckKernelSymbol(const std::string& path, bool need_kallsyms,
-                              bool* success) {
+static void CheckKernelSymbol(const std::string& path, bool need_kallsyms, bool* success) {
   *success = false;
-  std::unique_ptr<RecordFileReader> reader =
-      RecordFileReader::CreateInstance(path);
+  std::unique_ptr<RecordFileReader> reader = RecordFileReader::CreateInstance(path);
   ASSERT_TRUE(reader != nullptr);
   std::vector<std::unique_ptr<Record>> records = reader->DataSection();
   bool has_kernel_symbol_records = false;
@@ -455,17 +347,11 @@ static void ProcessSymbolsInPerfDataFile(
     const std::function<bool(const Symbol&, uint32_t)>& callback) {
   auto reader = RecordFileReader::CreateInstance(perf_data_file);
   ASSERT_TRUE(reader);
-  std::string file_path;
-  uint32_t file_type;
-  uint64_t min_vaddr;
-  uint64_t file_offset_of_min_vaddr;
-  std::vector<Symbol> symbols;
-  std::vector<uint64_t> dex_file_offsets;
+  FileFeature file;
   size_t read_pos = 0;
-  while (reader->ReadFileFeature(read_pos, &file_path, &file_type, &min_vaddr,
-                                 &file_offset_of_min_vaddr, &symbols, &dex_file_offsets)) {
-    for (const auto& symbol : symbols) {
-      if (callback(symbol, file_type)) {
+  while (reader->ReadFileFeature(read_pos, &file)) {
+    for (const auto& symbol : file.symbols) {
+      if (callback(symbol, file.type)) {
         return;
       }
     }
@@ -507,10 +393,7 @@ TEST(record_cmd, no_dump_symbols) {
 }
 
 TEST(record_cmd, dump_kernel_symbols) {
-  if (!IsRoot()) {
-    GTEST_LOG_(INFO) << "Test requires root privilege";
-    return;
-  }
+  TEST_REQUIRE_ROOT();
   TemporaryFile tmpfile;
   ASSERT_TRUE(RecordCmd()->Run({"-a", "-o", tmpfile.path, "-e", GetDefaultEvent(), "sleep", "1"}));
   bool has_kernel_symbols = false;
@@ -526,9 +409,9 @@ TEST(record_cmd, dump_kernel_symbols) {
 
 TEST(record_cmd, group_option) {
   ASSERT_TRUE(RunRecordCmd({"--group", "task-clock,cpu-clock", "-m", "16"}));
-  ASSERT_TRUE(RunRecordCmd({"--group", "task-clock,cpu-clock", "--group",
-                            "task-clock:u,cpu-clock:u", "--group",
-                            "task-clock:k,cpu-clock:k", "-m", "16"}));
+  ASSERT_TRUE(
+      RunRecordCmd({"--group", "task-clock,cpu-clock", "--group", "task-clock:u,cpu-clock:u",
+                    "--group", "task-clock:k,cpu-clock:k", "-m", "16"}));
 }
 
 TEST(record_cmd, symfs_option) {
@@ -546,8 +429,7 @@ TEST(record_cmd, duration_option) {
 TEST(record_cmd, support_modifier_for_clock_events) {
   for (const std::string& e : {"cpu-clock", "task-clock"}) {
     for (const std::string& m : {"u", "k"}) {
-      ASSERT_TRUE(RunRecordCmd({"-e", e + ":" + m})) << "event " << e << ":"
-                                                     << m;
+      ASSERT_TRUE(RunRecordCmd({"-e", e + ":" + m})) << "event " << e << ":" << m;
     }
   }
 }
@@ -580,7 +462,8 @@ TEST(record_cmd, stop_when_no_more_targets) {
     sleep(1);
   });
   thread.detach();
-  while (tid == 0);
+  while (tid == 0)
+    ;
   ASSERT_TRUE(RecordCmd()->Run(
       {"-o", tmpfile.path, "-t", std::to_string(tid), "--in-app", "-e", GetDefaultEvent()}));
 }
@@ -635,8 +518,8 @@ TEST(record_cmd, cpu_clock_for_a_long_time) {
   CreateProcesses(1, &workloads);
   std::string pid = std::to_string(workloads[0]->GetPid());
   TemporaryFile tmpfile;
-  ASSERT_TRUE(RecordCmd()->Run(
-      {"-e", "cpu-clock", "-o", tmpfile.path, "-p", pid, "--duration", "3"}));
+  ASSERT_TRUE(
+      RecordCmd()->Run({"-e", "cpu-clock", "-o", tmpfile.path, "-p", pid, "--duration", "3"}));
 }
 
 TEST(record_cmd, dump_regs_for_tracepoint_events) {
@@ -808,9 +691,7 @@ class RecordingAppHelper {
     return app_helper_.InstallApk(apk_path, package_name);
   }
 
-  bool StartApp(const std::string& start_cmd) {
-    return app_helper_.StartApp(start_cmd);
-  }
+  bool StartApp(const std::string& start_cmd) { return app_helper_.StartApp(start_cmd); }
 
   bool RecordData(const std::string& record_cmd) {
     std::vector<std::string> args = android::base::Split(record_cmd, " ");
@@ -849,7 +730,7 @@ static void TestRecordingApps(const std::string& app_name) {
   const std::string expected_method_name = "run";
   auto process_symbol = [&](const char* name) {
     return strstr(name, expected_class_name.c_str()) != nullptr &&
-        strstr(name, expected_method_name.c_str()) != nullptr;
+           strstr(name, expected_method_name.c_str()) != nullptr;
   };
   ASSERT_TRUE(helper.CheckData(process_symbol));
 }
@@ -1120,7 +1001,6 @@ TEST(record_cmd, ParseAddrFilterOption) {
   std::string path;
   ASSERT_TRUE(Realpath(GetTestData(ELF_FILE), &path));
 
-
   // Test file filters.
   ASSERT_EQ(option_to_str("filter " + path), "filter 0x0/0x73c@" + path);
   ASSERT_EQ(option_to_str("filter 0x400502-0x400527@" + path), "filter 0x502/0x25@" + path);
@@ -1130,4 +1010,17 @@ TEST(record_cmd, ParseAddrFilterOption) {
   // Test kernel filters.
   ASSERT_EQ(option_to_str("filter 0x12345678-0x1234567a"), "filter 0x12345678/0x2");
   ASSERT_EQ(option_to_str("start 0x12345678,stop 0x1234567a"), "start 0x12345678,stop 0x1234567a");
+}
+
+TEST(record_cmd, kprobe_option) {
+  TEST_REQUIRE_ROOT();
+  ProbeEvents probe_events;
+  if (!probe_events.IsKprobeSupported()) {
+    GTEST_LOG_(INFO) << "Skip this test as kprobe isn't supported by the kernel.";
+    return;
+  }
+  ASSERT_TRUE(RunRecordCmd({"-e", "kprobes:myprobe", "--kprobe", "p:myprobe do_sys_open"}));
+  // A default kprobe event is created if not given an explicit --kprobe option.
+  ASSERT_TRUE(RunRecordCmd({"-e", "kprobes:do_sys_open"}));
+  ASSERT_TRUE(RunRecordCmd({"--group", "kprobes:do_sys_open"}));
 }

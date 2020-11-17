@@ -29,7 +29,6 @@
 #include "build_id.h"
 #include "read_elf.h"
 
-
 namespace simpleperf_dso_impl {
 
 // Find elf files with symbol table and debug information.
@@ -39,8 +38,7 @@ class DebugElfFileFinder {
   bool SetSymFsDir(const std::string& symfs_dir);
   bool AddSymbolDir(const std::string& symbol_dir);
   void SetVdsoFile(const std::string& vdso_file, bool is_64bit);
-  std::string FindDebugFile(const std::string& dso_path, bool force_64bit,
-                            BuildId& build_id);
+  std::string FindDebugFile(const std::string& dso_path, bool force_64bit, BuildId& build_id);
   // Only for testing
   std::string GetPathInSymFsDir(const std::string& path);
 
@@ -65,9 +63,7 @@ struct Symbol {
 
   const char* DemangledName() const;
 
-  bool HasDumpId() const {
-    return dump_id_ != UINT_MAX;
-  }
+  bool HasDumpId() const { return dump_id_ != UINT_MAX; }
 
   bool GetDumpId(uint32_t* pdump_id) const {
     if (!HasDumpId()) {
@@ -85,13 +81,9 @@ struct Symbol {
     return id1 < id2;
   }
 
-  static bool CompareByAddr(const Symbol* s1, const Symbol* s2) {
-    return s1->addr < s2->addr;
-  }
+  static bool CompareByAddr(const Symbol* s1, const Symbol* s2) { return s1->addr < s2->addr; }
 
-  static bool CompareValueByAddr(const Symbol& s1, const Symbol& s2) {
-    return s1.addr < s2.addr;
-  }
+  static bool CompareValueByAddr(const Symbol& s1, const Symbol& s2) { return s1.addr < s2.addr; }
 
  private:
   const char* name_;
@@ -108,6 +100,8 @@ enum DsoType {
   DSO_DEX_FILE,  // For files containing dex files, like .vdex files.
   DSO_SYMBOL_MAP_FILE,
   DSO_UNKNOWN_FILE,
+  // DSO_UNKNOWN_FILE is written to the file feature section in recording files. Changing its value
+  // may cause compatibility issue. So put new DsoTypes below.
 };
 
 struct KernelSymbol;
@@ -130,11 +124,8 @@ class Dso {
       kallsyms_ = std::move(kallsyms);
     }
   }
-  static void ReadKernelSymbolsFromProc() {
-    read_kernel_symbols_from_proc_ = true;
-  }
-  static void SetBuildIds(
-      const std::vector<std::pair<std::string, BuildId>>& build_ids);
+  static void ReadKernelSymbolsFromProc() { read_kernel_symbols_from_proc_ = true; }
+  static void SetBuildIds(const std::vector<std::pair<std::string, BuildId>>& build_ids);
   static BuildId FindExpectedBuildIdForPath(const std::string& path);
   static void SetVdsoFile(const std::string& vdso_file, bool is_64bit);
 
@@ -155,9 +146,7 @@ class Dso {
   // Return the file name without directory info.
   const std::string& FileName() const { return file_name_; }
 
-  bool HasDumpId() {
-    return dump_id_ != UINT_MAX;
-  }
+  bool HasDumpId() { return dump_id_ != UINT_MAX; }
 
   bool GetDumpId(uint32_t* pdump_id) {
     if (!HasDumpId()) {

@@ -25,9 +25,9 @@
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 
+#include "ETMDecoder.h"
 #include "command.h"
 #include "dso.h"
-#include "ETMDecoder.h"
 #include "event_attr.h"
 #include "event_type.h"
 #include "perf_regs.h"
@@ -36,8 +36,8 @@
 #include "tracing.h"
 #include "utils.h"
 
-using namespace PerfFileFormat;
 using namespace simpleperf;
+using namespace simpleperf::PerfFileFormat;
 
 namespace {
 
@@ -47,7 +47,7 @@ struct SymbolInfo {
   uint64_t vaddr_in_file;
 };
 
-using ExtractFieldFn = std::function<std::string(const TracingField&, const char*)>;
+using ExtractFieldFn = std::function<std::string(const TracingField&, const PerfSampleRawType&)>;
 
 struct EventInfo {
   size_t tp_data_size = 0;
@@ -55,22 +55,43 @@ struct EventInfo {
   std::vector<ExtractFieldFn> extract_field_functions;
 };
 
-std::string ExtractStringField(const TracingField& field, const char* data) {
+std::string ExtractStringField(const TracingField& field, const PerfSampleRawType& data) {
   std::string s;
   // data points to a char [field.elem_count] array. It is not guaranteed to be ended
   // with '\0'. So need to copy from data like strncpy.
-  for (size_t i = 0; i < field.elem_count && data[i] != '\0'; i++) {
-    s.push_back(data[i]);
+  size_t max_len = std::min(data.size - field.offset, field.elem_count);
+  const char* p = data.data + field.offset;
+  for (size_t i = 0; i < max_len && *p != '\0'; i++) {
+    s.push_back(*p++);
+  }
+  return s;
+}
+
+std::string ExtractDynamicStringField(const TracingField& field, const PerfSampleRawType& data) {
+  std::string s;
+  const char* p = data.data + field.offset;
+  if (field.elem_size != 4 || field.offset + field.elem_size > data.size) {
+    return s;
+  }
+  uint32_t location;
+  MoveFromBinaryFormat(location, p);
+  // Parse location: (max_len << 16) | off.
+  uint32_t offset = location & 0xffff;
+  uint32_t max_len = location >> 16;
+  if (offset + max_len <= data.size) {
+    p = data.data + offset;
+    for (size_t i = 0; i < max_len && *p != '\0'; i++) {
+      s.push_back(*p++);
+    }
   }
   return s;
 }
 
 template <typename T, typename UT = typename std::make_unsigned<T>::type>
-std::string ExtractIntField(const TracingField& field, const char* data) {
+std::string ExtractIntFieldFromPointer(const TracingField& field, const char* p) {
   static_assert(std::is_signed<T>::value);
-
   T value;
-  MoveFromBinaryFormat(value, data);
+  MoveFromBinaryFormat(value, p);
 
   if (field.is_signed) {
     return android::base::StringPrintf("%" PRId64, static_cast<int64_t>(value));
@@ -79,33 +100,52 @@ std::string ExtractIntField(const TracingField& field, const char* data) {
 }
 
 template <typename T>
-std::string ExtractIntArrayField(const TracingField& field, const char* data) {
+std::string ExtractIntField(const TracingField& field, const PerfSampleRawType& data) {
+  if (field.offset + sizeof(T) > data.size) {
+    return "";
+  }
+  return ExtractIntFieldFromPointer<T>(field, data.data + field.offset);
+}
+
+template <typename T>
+std::string ExtractIntArrayField(const TracingField& field, const PerfSampleRawType& data) {
+  if (field.offset + field.elem_size * field.elem_count > data.size) {
+    return "";
+  }
   std::string s;
+  const char* p = data.data + field.offset;
   for (size_t i = 0; i < field.elem_count; i++) {
     if (i != 0) {
       s.push_back(' ');
     }
-    s += ExtractIntField<T>(field, data);
-    data += field.elem_size;
+    ExtractIntFieldFromPointer<T>(field, p);
+    p += field.elem_size;
   }
   return s;
 }
 
-std::string ExtractUnknownField(const TracingField& field, const char* data) {
+std::string ExtractUnknownField(const TracingField& field, const PerfSampleRawType& data) {
   size_t total = field.elem_size * field.elem_count;
+  if (field.offset + total > data.size) {
+    return "";
+  }
   uint32_t value;
   std::string s;
+  const char* p = data.data + field.offset;
   for (size_t i = 0; i + sizeof(value) <= total; i += sizeof(value)) {
     if (i != 0) {
       s.push_back(' ');
     }
-    MoveFromBinaryFormat(value, data);
+    MoveFromBinaryFormat(value, p);
     s += android::base::StringPrintf("0x%08x", value);
   }
   return s;
 }
 
 ExtractFieldFn GetExtractFieldFunction(const TracingField& field) {
+  if (field.is_dynamic) {
+    return ExtractDynamicStringField;
+  }
   if (field.elem_count > 1 && field.elem_size == 1) {
     // Probably the field is a string.
     // Don't use field.is_signed, which has different values on x86 and arm.
@@ -113,17 +153,25 @@ ExtractFieldFn GetExtractFieldFunction(const TracingField& field) {
   }
   if (field.elem_count == 1) {
     switch (field.elem_size) {
-      case 1: return ExtractIntField<int8_t>;
-      case 2: return ExtractIntField<int16_t>;
-      case 4: return ExtractIntField<int32_t>;
-      case 8: return ExtractIntField<int64_t>;
+      case 1:
+        return ExtractIntField<int8_t>;
+      case 2:
+        return ExtractIntField<int16_t>;
+      case 4:
+        return ExtractIntField<int32_t>;
+      case 8:
+        return ExtractIntField<int64_t>;
     }
   } else {
     switch (field.elem_size) {
-      case 1: return ExtractIntArrayField<int8_t>;
-      case 2: return ExtractIntArrayField<int16_t>;
-      case 4: return ExtractIntArrayField<int32_t>;
-      case 8: return ExtractIntArrayField<int64_t>;
+      case 1:
+        return ExtractIntArrayField<int8_t>;
+      case 2:
+        return ExtractIntArrayField<int16_t>;
+      case 4:
+        return ExtractIntArrayField<int32_t>;
+      case 8:
+        return ExtractIntArrayField<int64_t>;
     }
   }
   return ExtractUnknownField;
@@ -137,9 +185,10 @@ class DumpRecordCommand : public Command {
 "Usage: simpleperf dumprecord [options] [perf_record_file]\n"
 "    Dump different parts of a perf record file. Default file is perf.data.\n"
 "--dump-etm type1,type2,...   Dump etm data. A type is one of raw, packet and element.\n"
+"-i <record_file>             Record file to dump. Default is perf.data.\n"
 "--symdir <dir>               Look for binaries in a directory recursively.\n"
                 // clang-format on
-      ) {}
+        ) {}
 
   bool Run(const std::vector<std::string>& args);
 
@@ -184,30 +233,35 @@ bool DumpRecordCommand::Run(const std::vector<std::string>& args) {
 }
 
 bool DumpRecordCommand::ParseOptions(const std::vector<std::string>& args) {
-  size_t i;
-  for (i = 0; i < args.size() && !args[i].empty() && args[i][0] == '-'; ++i) {
-    if (args[i] == "--dump-etm") {
-      if (!NextArgumentOrError(args, &i) || !ParseEtmDumpOption(args[i], &etm_dump_option_)) {
-        return false;
-      }
-    } else if (args[i] == "--symdir") {
-      if (!NextArgumentOrError(args, &i)) {
-        return false;
-      }
-      if (!Dso::AddSymbolDir(args[i])) {
-        return false;
-      }
-    } else {
-      ReportUnknownOption(args, i);
+  const OptionFormatMap option_formats = {
+      {"--dump-etm", {OptionValueType::STRING, OptionType::SINGLE}},
+      {"-i", {OptionValueType::STRING, OptionType::SINGLE}},
+      {"--symdir", {OptionValueType::STRING, OptionType::MULTIPLE}},
+  };
+  OptionValueMap options;
+  std::vector<std::pair<OptionName, OptionValue>> ordered_options;
+  std::vector<std::string> non_option_args;
+  if (!PreprocessOptions(args, option_formats, &options, &ordered_options, &non_option_args)) {
+    return false;
+  }
+  if (auto value = options.PullValue("--dump-etm"); value) {
+    if (!ParseEtmDumpOption(*value->str_value, &etm_dump_option_)) {
       return false;
     }
   }
-  if (i + 1 < args.size()) {
+  options.PullStringValue("-i", &record_filename_);
+  for (const OptionValue& value : options.PullValues("--symdir")) {
+    if (!Dso::AddSymbolDir(*value.str_value)) {
+      return false;
+    }
+  }
+  CHECK(options.values.empty());
+  if (non_option_args.size() > 1) {
     LOG(ERROR) << "too many record files";
     return false;
   }
-  if (i + 1 == args.size()) {
-    record_filename_ = args[i];
+  if (non_option_args.size() == 1) {
+    record_filename_ = non_option_args[0];
   }
   return true;
 }
@@ -232,7 +286,7 @@ void DumpRecordCommand::DumpFileHeader() {
   printf("attr_size: %" PRId64 "\n", header.attr_size);
   if (header.attr_size != sizeof(FileAttr)) {
     LOG(WARNING) << "record file attr size " << header.attr_size
-                  << " doesn't match expected attr size " << sizeof(FileAttr);
+                 << " doesn't match expected attr size " << sizeof(FileAttr);
   }
   printf("attrs[file section]: offset %" PRId64 ", size %" PRId64 "\n", header.attrs.offset,
          header.attrs.size);
@@ -274,9 +328,7 @@ bool DumpRecordCommand::DumpDataSection() {
   thread_tree_.ShowIpForUnknownSymbol();
   record_file_reader_->LoadBuildIdAndFileFeatures(thread_tree_);
 
-  auto record_callback = [&](std::unique_ptr<Record> r) {
-    return ProcessRecord(r.get());
-  };
+  auto record_callback = [&](std::unique_ptr<Record> r) { return ProcessRecord(r.get()); };
   return record_file_reader_->ReadDataSection(record_callback);
 }
 
@@ -336,13 +388,11 @@ void DumpRecordCommand::ProcessSampleRecord(const SampleRecord& sr) {
     size_t attr_index = record_file_reader_->GetAttrIndexOfRecord(&sr);
     auto& event = events_[attr_index];
     if (event.tp_data_size > 0 && sr.raw_data.size >= event.tp_data_size) {
-      const char* p = sr.raw_data.data;
       PrintIndented(1, "tracepoint fields:\n");
       for (size_t i = 0; i < event.tp_fields.size(); i++) {
         auto& field = event.tp_fields[i];
-        std::string s = event.extract_field_functions[i](field, p);
+        std::string s = event.extract_field_functions[i](field, sr.raw_data);
         PrintIndented(2, "%s: %s\n", field.name.c_str(), s.c_str());
-        p += field.elem_count * field.elem_size;
       }
     }
   }
@@ -358,7 +408,7 @@ void DumpRecordCommand::ProcessCallChainRecord(const CallChainRecord& cr) {
 }
 
 SymbolInfo DumpRecordCommand::GetSymbolInfo(uint32_t pid, uint32_t tid, uint64_t ip,
-                                             bool in_kernel) {
+                                            bool in_kernel) {
   ThreadEntry* thread = thread_tree_.FindThreadOrNew(pid, tid);
   const MapEntry* map = thread_tree_.FindMap(thread, ip, in_kernel);
   SymbolInfo info;
@@ -422,29 +472,22 @@ bool DumpRecordCommand::DumpFeatureSection() {
       std::vector<std::string> cmdline = record_file_reader_->ReadCmdlineFeature();
       PrintIndented(1, "cmdline: %s\n", android::base::Join(cmdline, ' ').c_str());
     } else if (feature == FEAT_FILE) {
-      std::string file_path;
-      uint32_t file_type;
-      uint64_t min_vaddr;
-      uint64_t file_offset_of_min_vaddr;
-      std::vector<Symbol> symbols;
-      std::vector<uint64_t> dex_file_offsets;
+      FileFeature file;
       size_t read_pos = 0;
       PrintIndented(1, "file:\n");
-      while (record_file_reader_->ReadFileFeature(read_pos, &file_path, &file_type,
-                                                  &min_vaddr, &file_offset_of_min_vaddr,
-                                                  &symbols, &dex_file_offsets)) {
-        PrintIndented(2, "file_path %s\n", file_path.c_str());
-        PrintIndented(2, "file_type %s\n", DsoTypeToString(static_cast<DsoType>(file_type)));
-        PrintIndented(2, "min_vaddr 0x%" PRIx64 "\n", min_vaddr);
-        PrintIndented(2, "file_offset_of_min_vaddr 0x%" PRIx64 "\n", file_offset_of_min_vaddr);
+      while (record_file_reader_->ReadFileFeature(read_pos, &file)) {
+        PrintIndented(2, "file_path %s\n", file.path.c_str());
+        PrintIndented(2, "file_type %s\n", DsoTypeToString(file.type));
+        PrintIndented(2, "min_vaddr 0x%" PRIx64 "\n", file.min_vaddr);
+        PrintIndented(2, "file_offset_of_min_vaddr 0x%" PRIx64 "\n", file.file_offset_of_min_vaddr);
         PrintIndented(2, "symbols:\n");
-        for (const auto& symbol : symbols) {
+        for (const auto& symbol : file.symbols) {
           PrintIndented(3, "%s [0x%" PRIx64 "-0x%" PRIx64 "]\n", symbol.DemangledName(),
                         symbol.addr, symbol.addr + symbol.len);
         }
-        if (file_type == static_cast<uint32_t>(DSO_DEX_FILE)) {
+        if (file.type == DSO_DEX_FILE) {
           PrintIndented(2, "dex_file_offsets:\n");
-          for (uint64_t offset : dex_file_offsets) {
+          for (uint64_t offset : file.dex_file_offsets) {
             PrintIndented(3, "0x%" PRIx64 "\n", offset);
           }
         }

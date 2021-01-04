@@ -8,7 +8,7 @@ Usage:
 ${0##*/} OUTPUT_FILE SIZE
          [-S] [-C FS_CONFIG] [-f SRC_DIR] [-D PRODUCT_OUT]
          [-s FILE_CONTEXTS] [-t MOUNT_POINT] [-T TIMESTAMP]
-         [-L LABEL] [--prjquota] [--casefold]
+         [-L LABEL] [--prjquota] [--casefold] [--compression]
 EOT
 }
 
@@ -85,6 +85,11 @@ if [[ "$1" == "--casefold" ]]; then
   shift;
 fi
 
+if [[ "$1" == "--compression" ]]; then
+  MKFS_OPTS+=" -O compression,extra_attr"
+  shift;
+fi
+
 if [ -z $SIZE ]; then
   echo "Need size of filesystem"
   exit 2
@@ -112,7 +117,10 @@ fi
 SLOAD_F2FS_CMD="sload_f2fs $SLOAD_OPTS $OUTPUT_FILE"
 echo $SLOAD_F2FS_CMD
 $SLOAD_F2FS_CMD
-if [ $? -ne 0 ]; then
+# allow 1: Filesystem errors corrected
+ret=$?
+if [ $ret -ne 0 ] && [ $ret -ne 1 ]; then
   rm -f $OUTPUT_FILE
   exit 4
 fi
+exit 0

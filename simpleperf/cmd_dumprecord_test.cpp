@@ -30,6 +30,10 @@ TEST(cmd_dump, record_file_option) {
   ASSERT_TRUE(DumpCmd()->Run({GetTestData("perf.data")}));
 }
 
+TEST(cmd_dump, input_option) {
+  ASSERT_TRUE(DumpCmd()->Run({"-i", GetTestData("perf.data")}));
+}
+
 TEST(cmd_dump, dump_data_generated_by_linux_perf) {
   ASSERT_TRUE(DumpCmd()->Run({GetTestData(PERF_DATA_GENERATED_BY_LINUX_PERF)}));
 }
@@ -53,6 +57,13 @@ TEST(cmd_dump, dump_tracepoint_fields_of_sample_records) {
   ASSERT_TRUE(DumpCmd()->Run({GetTestData("perf_with_tracepoint_event.data")}));
   std::string data = capture.Finish();
   ASSERT_NE(data.find("prev_comm: sleep"), std::string::npos);
+
+  // dump dynamic field of tracepoint events.
+  ASSERT_TRUE(capture.Start());
+  ASSERT_TRUE(DumpCmd()->Run({GetTestData("perf_with_tracepoint_event_dynamic_field.data")}));
+  data = capture.Finish();
+  ASSERT_NE(data.find("name: /sys/kernel/debug/tracing/events/kprobes/myopen/format"),
+            std::string::npos);
 }
 
 TEST(cmd_dump, etm_data) {

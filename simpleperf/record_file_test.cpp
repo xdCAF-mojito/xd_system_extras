@@ -30,7 +30,8 @@
 
 #include "record_equal_test.h"
 
-using namespace PerfFileFormat;
+using namespace simpleperf;
+using namespace simpleperf::PerfFileFormat;
 
 class RecordFileTest : public ::testing::Test {
  protected:
@@ -61,8 +62,8 @@ TEST_F(RecordFileTest, smoke) {
   ASSERT_TRUE(writer->WriteAttrSection(attr_ids_));
 
   // Write data section.
-  MmapRecord mmap_record(*(attr_ids_[0].attr), true, 1, 1, 0x1000, 0x2000,
-                         0x3000, "mmap_record_example", attr_ids_[0].ids[0]);
+  MmapRecord mmap_record(*(attr_ids_[0].attr), true, 1, 1, 0x1000, 0x2000, 0x3000,
+                         "mmap_record_example", attr_ids_[0].ids[0]);
   ASSERT_TRUE(writer->WriteRecord(mmap_record));
 
   // Write feature section.

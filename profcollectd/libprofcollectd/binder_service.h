@@ -37,10 +37,14 @@ class ProfcollectdBinder : public BinderService<ProfcollectdBinder>,
   binder::Status TerminateCollection() override;
   binder::Status TraceOnce(const std::string& tag) override;
   binder::Status ProcessProfile() override;
+  binder::Status CreateProfileReport() override;
   binder::Status GetSupportedProvider(std::string* provider) override;
 
  protected:
   inline static std::unique_ptr<ProfcollectdScheduler> Scheduler;
+
+ private:
+  binder::Status ForwardScheduler(const std::function<OptError()>& action);
 };
 
 }  // namespace profcollectd

@@ -18,16 +18,6 @@
 
 namespace android {
 namespace profcollectd {
-
-// Daemon side operations.
-void InitService(bool start);
-
-// Client side operations.
-void ScheduleCollection();
-void TerminateCollection();
-void TraceOnce();
-void Process();
-void ReadConfig();
-
+  void InitService(bool start);
 }  // namespace profcollectd
 }  // namespace android

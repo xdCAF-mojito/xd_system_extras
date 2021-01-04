@@ -17,9 +17,9 @@
 // Add fake functions to build successfully on darwin.
 #include <android-base/logging.h>
 
-#include "read_dex_file.h"
-#include "environment.h"
 #include "OfflineUnwinder.h"
+#include "environment.h"
+#include "read_dex_file.h"
 
 bool GetKernelBuildId(BuildId*) {
   return false;
@@ -45,7 +45,7 @@ const char* GetTraceFsDir() {
 
 namespace simpleperf {
 
-class DummyOfflineUnwinder : public OfflineUnwinder {
+class NoOpOfflineUnwinder : public OfflineUnwinder {
  public:
   bool UnwindCallChain(const ThreadEntry&, const RegSet&, const char*, size_t,
                        std::vector<uint64_t>*, std::vector<uint64_t>*) override {
@@ -54,7 +54,7 @@ class DummyOfflineUnwinder : public OfflineUnwinder {
 };
 
 std::unique_ptr<OfflineUnwinder> OfflineUnwinder::Create(bool) {
-  return std::unique_ptr<OfflineUnwinder>(new DummyOfflineUnwinder);
+  return std::unique_ptr<OfflineUnwinder>(new NoOpOfflineUnwinder);
 }
 
 }  // namespace simpleperf

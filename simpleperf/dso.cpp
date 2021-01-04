@@ -22,25 +22,30 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/strings.h>
 
+#include "JITDebugReader.h"
 #include "environment.h"
 #include "read_apk.h"
 #include "read_dex_file.h"
 #include "read_elf.h"
 #include "utils.h"
 
+using android::base::EndsWith;
+using android::base::StartsWith;
 using namespace simpleperf;
 
 namespace simpleperf_dso_impl {
 
 std::string RemovePathSeparatorSuffix(const std::string& path) {
   // Don't remove path separator suffix for '/'.
-  if (android::base::EndsWith(path, OS_PATH_SEPARATOR) && path.size() > 1u) {
+  if (EndsWith(path, OS_PATH_SEPARATOR) && path.size() > 1u) {
     return path.substr(0, path.size() - 1);
   }
   return path;
@@ -174,7 +179,7 @@ std::string DebugElfFileFinder::FindDebugFile(const std::string& dso_path, bool 
 
 std::string DebugElfFileFinder::GetPathInSymFsDir(const std::string& path) {
   auto add_symfs_prefix = [&](const std::string& path) {
-    if (android::base::StartsWith(path, OS_PATH_SEPARATOR)) {
+    if (StartsWith(path, OS_PATH_SEPARATOR)) {
       return symfs_dir_ + path;
     }
     return symfs_dir_ + OS_PATH_SEPARATOR + path;
@@ -195,7 +200,7 @@ std::string DebugElfFileFinder::GetPathInSymFsDir(const std::string& path) {
   std::replace(elf_path.begin(), elf_path.end(), '/', OS_PATH_SEPARATOR);
   return add_symfs_prefix(elf_path);
 }
-}  // namespace simpleperf_dso_imp
+}  // namespace simpleperf_dso_impl
 
 static OneTimeFreeAllocator symbol_name_allocator;
 
@@ -204,8 +209,7 @@ Symbol::Symbol(std::string_view name, uint64_t addr, uint64_t len)
       len(len),
       name_(symbol_name_allocator.AllocateString(name)),
       demangled_name_(nullptr),
-      dump_id_(UINT_MAX) {
-}
+      dump_id_(UINT_MAX) {}
 
 const char* Symbol::DemangledName() const {
   if (demangled_name_ == nullptr) {
@@ -228,10 +232,11 @@ size_t Dso::dso_count_;
 uint32_t Dso::g_dump_id_;
 simpleperf_dso_impl::DebugElfFileFinder Dso::debug_elf_file_finder_;
 
-void Dso::SetDemangle(bool demangle) { demangle_ = demangle; }
+void Dso::SetDemangle(bool demangle) {
+  demangle_ = demangle;
+}
 
-extern "C" char* __cxa_demangle(const char* mangled_name, char* buf, size_t* n,
-                                int* status);
+extern "C" char* __cxa_demangle(const char* mangled_name, char* buf, size_t* n, int* status);
 
 std::string Dso::Demangle(const std::string& name) {
   if (!demangle_) {
@@ -266,14 +271,14 @@ bool Dso::AddSymbolDir(const std::string& symbol_dir) {
   return debug_elf_file_finder_.AddSymbolDir(symbol_dir);
 }
 
-void Dso::SetVmlinux(const std::string& vmlinux) { vmlinux_ = vmlinux; }
+void Dso::SetVmlinux(const std::string& vmlinux) {
+  vmlinux_ = vmlinux;
+}
 
-void Dso::SetBuildIds(
-    const std::vector<std::pair<std::string, BuildId>>& build_ids) {
+void Dso::SetBuildIds(const std::vector<std::pair<std::string, BuildId>>& build_ids) {
   std::unordered_map<std::string, BuildId> map;
   for (auto& pair : build_ids) {
-    LOG(DEBUG) << "build_id_map: " << pair.first << ", "
-               << pair.second.ToString();
+    LOG(DEBUG) << "build_id_map: " << pair.first << ", " << pair.second.ToString();
     map.insert(pair);
   }
   build_id_map_ = std::move(map);
@@ -337,12 +342,15 @@ uint32_t Dso::CreateSymbolDumpId(const Symbol* symbol) {
   return symbol->dump_id_;
 }
 
+std::optional<uint64_t> Dso::IpToFileOffset(uint64_t ip, uint64_t map_start, uint64_t map_pgoff) {
+  return ip - map_start + map_pgoff;
+}
+
 const Symbol* Dso::FindSymbol(uint64_t vaddr_in_dso) {
   if (!is_loaded_) {
     Load();
   }
-  auto it = std::upper_bound(symbols_.begin(), symbols_.end(),
-                             Symbol("", vaddr_in_dso, 0),
+  auto it = std::upper_bound(symbols_.begin(), symbols_.end(), Symbol("", vaddr_in_dso, 0),
                              Symbol::CompareValueByAddr);
   if (it != symbols_.begin()) {
     --it;
@@ -373,11 +381,13 @@ bool Dso::IsForJavaMethod() {
     return true;
   }
   if (type_ == DSO_ELF_FILE) {
-    // JIT symfiles for JITed Java methods are dumped as temporary files, whose name are in format
-    // "TemporaryFile-XXXXXX".
+    if (JITDebugReader::IsPathInJITSymFile(path_)) {
+      return true;
+    }
+    // JITDebugReader in old versions generates symfiles in 'TemporaryFile-XXXXXX'.
     size_t pos = path_.rfind('/');
     pos = (pos == std::string::npos) ? 0 : pos + 1;
-    return strncmp(&path_[pos], "TemporaryFile", strlen("TemporaryFile")) == 0;
+    return StartsWith(std::string_view(&path_[pos], path_.size() - pos), "TemporaryFile");
   }
   return false;
 }
@@ -395,8 +405,8 @@ void Dso::Load() {
   }
 }
 
-static void ReportReadElfSymbolResult(ElfStatus result, const std::string& path,
-    const std::string& debug_file_path,
+static void ReportReadElfSymbolResult(
+    ElfStatus result, const std::string& path, const std::string& debug_file_path,
     android::base::LogSeverity warning_loglevel = android::base::WARNING) {
   if (result == ElfStatus::NO_ERROR) {
     LOG(VERBOSE) << "Read symbols from " << debug_file_path << " successfully";
@@ -429,17 +439,14 @@ class DexFileDso : public Dso {
       : Dso(DSO_DEX_FILE, path, debug_file_path) {}
 
   void AddDexFileOffset(uint64_t dex_file_offset) override {
-    auto it = std::lower_bound(dex_file_offsets_.begin(), dex_file_offsets_.end(),
-                               dex_file_offset);
+    auto it = std::lower_bound(dex_file_offsets_.begin(), dex_file_offsets_.end(), dex_file_offset);
     if (it != dex_file_offsets_.end() && *it == dex_file_offset) {
       return;
     }
     dex_file_offsets_.insert(it, dex_file_offset);
   }
 
-  const std::vector<uint64_t>* DexFileOffsets() override {
-    return &dex_file_offsets_;
-  }
+  const std::vector<uint64_t>* DexFileOffsets() override { return &dex_file_offsets_; }
 
   uint64_t IpToVaddrInFile(uint64_t ip, uint64_t map_start, uint64_t map_pgoff) override {
     return ip - map_start + map_pgoff;
@@ -454,8 +461,8 @@ class DexFileDso : public Dso {
       std::unique_ptr<ArchiveHelper> ahelper = ArchiveHelper::CreateInstance(std::get<1>(tuple));
       ZipEntry entry;
       std::vector<uint8_t> data;
-      if (ahelper &&
-          ahelper->FindEntry(std::get<2>(tuple), &entry) && ahelper->GetEntryData(entry, &data)) {
+      if (ahelper && ahelper->FindEntry(std::get<2>(tuple), &entry) &&
+          ahelper->GetEntryData(entry, &data)) {
         status = ReadSymbolsFromDexFileInMemory(data.data(), data.size(), dex_file_offsets_,
                                                 &dex_file_symbols);
       }
@@ -463,8 +470,8 @@ class DexFileDso : public Dso {
       status = ReadSymbolsFromDexFile(debug_file_path_, dex_file_offsets_, &dex_file_symbols);
     }
     if (!status) {
-      android::base::LogSeverity level = symbols_.empty() ? android::base::WARNING
-                                                          : android::base::DEBUG;
+      android::base::LogSeverity level =
+          symbols_.empty() ? android::base::WARNING : android::base::DEBUG;
       LOG(level) << "Failed to read symbols from " << debug_file_path_;
       return symbols;
     }
@@ -484,6 +491,16 @@ class ElfDso : public Dso {
  public:
   ElfDso(const std::string& path, const std::string& debug_file_path)
       : Dso(DSO_ELF_FILE, path, debug_file_path) {}
+
+  std::string_view GetReportPath() const override {
+    if (JITDebugReader::IsPathInJITSymFile(path_)) {
+      if (path_.find(kJITAppCacheFile) != path_.npos) {
+        return "[JIT app cache]";
+      }
+      return "[JIT zygote cache]";
+    }
+    return path_;
+  }
 
   void SetMinExecutableVaddr(uint64_t min_vaddr, uint64_t file_offset) override {
     min_vaddr_ = min_vaddr;
@@ -578,31 +595,99 @@ class ElfDso : public Dso {
 class KernelDso : public Dso {
  public:
   KernelDso(const std::string& path, const std::string& debug_file_path)
-      : Dso(DSO_KERNEL, path, debug_file_path) {}
+      : Dso(DSO_KERNEL, path, debug_file_path) {
+    if (!vmlinux_.empty()) {
+      // Use vmlinux as the kernel debug file.
+      BuildId build_id = GetExpectedBuildId();
+      ElfStatus status;
+      if (ElfFile::Open(vmlinux_, &build_id, &status)) {
+        debug_file_path_ = vmlinux_;
+        has_debug_file_ = true;
+      }
+    } else if (IsRegularFile(debug_file_path_)) {
+      has_debug_file_ = true;
+    }
+  }
 
-  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t, uint64_t) override {
+  // IpToVaddrInFile() and LoadSymbols() must be consistent in fixing addresses changed by kernel
+  // address space layout randomization.
+  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t map_start, uint64_t) override {
+    if (map_start != 0 && GetKernelStartAddr() != 0) {
+      // Fix kernel addresses changed by kernel address randomization.
+      fix_kernel_address_randomization_ = true;
+      return ip - map_start + GetKernelStartAddr();
+    }
     return ip;
+  }
+
+  std::optional<uint64_t> IpToFileOffset(uint64_t ip, uint64_t map_start, uint64_t) override {
+    if (map_start != 0 && GetKernelStartOffset() != 0) {
+      return ip - map_start + GetKernelStartOffset();
+    }
+    return std::nullopt;
   }
 
  protected:
   std::vector<Symbol> LoadSymbols() override {
     std::vector<Symbol> symbols;
-    BuildId build_id = GetExpectedBuildId();
-    if (!vmlinux_.empty()) {
-      auto symbol_callback = [&](const ElfFileSymbol& symbol) {
-        if (symbol.is_func) {
-          symbols.emplace_back(symbol.name, symbol.vaddr, symbol.len);
-        }
-      };
-      ElfStatus status;
-      auto elf = ElfFile::Open(vmlinux_, &build_id, &status);
-      if (elf) {
-        status = elf->ParseSymbols(symbol_callback);
+    if (has_debug_file_) {
+      ReadSymbolsFromDebugFile(&symbols);
+    }
+    if (symbols.empty() && !kallsyms_.empty()) {
+      ReadSymbolsFromKallsyms(kallsyms_, &symbols);
+    }
+    if (symbols.empty()) {
+      ReadSymbolsFromProc(&symbols);
+    }
+    SortAndFixSymbols(symbols);
+    if (!symbols.empty()) {
+      symbols.back().len = std::numeric_limits<uint64_t>::max() - symbols.back().addr;
+    }
+    return symbols;
+  }
+
+ private:
+  void ReadSymbolsFromDebugFile(std::vector<Symbol>* symbols) {
+    if (!fix_kernel_address_randomization_) {
+      LOG(WARNING) << "Don't know how to fix addresses changed by kernel address randomization. So "
+                      "symbols in "
+                   << debug_file_path_ << " are not used";
+      return;
+    }
+    // symbols_ are kernel symbols got from /proc/kallsyms while recording. Those symbols are
+    // not fixed for kernel address randomization. So clear them to avoid mixing them with
+    // symbols in debug_file_path.
+    symbols_.clear();
+
+    auto symbol_callback = [&](const ElfFileSymbol& symbol) {
+      if (symbol.is_func) {
+        symbols->emplace_back(symbol.name, symbol.vaddr, symbol.len);
       }
-      ReportReadElfSymbolResult(status, path_, vmlinux_);
-    } else if (!kallsyms_.empty()) {
-      symbols = ReadSymbolsFromKallsyms(kallsyms_);
-    } else if (read_kernel_symbols_from_proc_ || !build_id.IsEmpty()) {
+    };
+    ElfStatus status;
+    if (auto elf = ElfFile::Open(debug_file_path_, &status); elf) {
+      status = elf->ParseSymbols(symbol_callback);
+    }
+    ReportReadElfSymbolResult(status, path_, debug_file_path_);
+  }
+
+  void ReadSymbolsFromKallsyms(std::string& kallsyms, std::vector<Symbol>* symbols) {
+    auto symbol_callback = [&](const KernelSymbol& symbol) {
+      if (strchr("TtWw", symbol.type) && symbol.addr != 0u) {
+        symbols->emplace_back(symbol.name, symbol.addr, 0);
+      }
+      return false;
+    };
+    ProcessKernelSymbols(kallsyms, symbol_callback);
+    if (symbols->empty()) {
+      LOG(WARNING) << "Symbol addresses in /proc/kallsyms on device are all zero. "
+                      "`echo 0 >/proc/sys/kernel/kptr_restrict` if possible.";
+    }
+  }
+
+  void ReadSymbolsFromProc(std::vector<Symbol>* symbols) {
+    BuildId build_id = GetExpectedBuildId();
+    if (read_kernel_symbols_from_proc_ || !build_id.IsEmpty()) {
       // Try /proc/kallsyms only when asked to do so, or when build id matches.
       // Otherwise, it is likely to use /proc/kallsyms on host for perf.data recorded on device.
       bool can_read_kallsyms = true;
@@ -618,33 +703,47 @@ class KernelDso : public Dso {
         if (!android::base::ReadFileToString("/proc/kallsyms", &kallsyms)) {
           LOG(DEBUG) << "failed to read /proc/kallsyms";
         } else {
-          symbols = ReadSymbolsFromKallsyms(kallsyms);
+          ReadSymbolsFromKallsyms(kallsyms, symbols);
         }
       }
     }
-    SortAndFixSymbols(symbols);
-    if (!symbols.empty()) {
-      symbols.back().len = std::numeric_limits<uint64_t>::max() - symbols.back().addr;
-    }
-    return symbols;
   }
 
- private:
-  std::vector<Symbol> ReadSymbolsFromKallsyms(std::string& kallsyms) {
-    std::vector<Symbol> symbols;
-    auto symbol_callback = [&](const KernelSymbol& symbol) {
-      if (strchr("TtWw", symbol.type) && symbol.addr != 0u) {
-        symbols.emplace_back(symbol.name, symbol.addr, 0);
-      }
-      return false;
-    };
-    ProcessKernelSymbols(kallsyms, symbol_callback);
-    if (symbols.empty()) {
-      LOG(WARNING) << "Symbol addresses in /proc/kallsyms on device are all zero. "
-                      "`echo 0 >/proc/sys/kernel/kptr_restrict` if possible.";
+  uint64_t GetKernelStartAddr() {
+    if (!kernel_start_addr_) {
+      ParseKernelStartAddr();
     }
-    return symbols;
+    return kernel_start_addr_.value();
   }
+
+  uint64_t GetKernelStartOffset() {
+    if (!kernel_start_file_offset_) {
+      ParseKernelStartAddr();
+    }
+    return kernel_start_file_offset_.value();
+  }
+
+  void ParseKernelStartAddr() {
+    kernel_start_addr_ = 0;
+    kernel_start_file_offset_ = 0;
+    if (has_debug_file_) {
+      ElfStatus status;
+      if (auto elf = ElfFile::Open(debug_file_path_, &status); elf) {
+        for (const auto& section : elf->GetSectionHeader()) {
+          if (section.name == ".text") {
+            kernel_start_addr_ = section.vaddr;
+            kernel_start_file_offset_ = section.file_offset;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  bool has_debug_file_ = false;
+  bool fix_kernel_address_randomization_ = false;
+  std::optional<uint64_t> kernel_start_addr_;
+  std::optional<uint64_t> kernel_start_file_offset_;
 };
 
 class KernelModuleDso : public Dso {
@@ -677,37 +776,41 @@ class KernelModuleDso : public Dso {
   }
 };
 
+class SymbolMapFileDso : public Dso {
+ public:
+  SymbolMapFileDso(const std::string& path) : Dso(DSO_SYMBOL_MAP_FILE, path, path) {}
+
+  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t, uint64_t) override { return ip; }
+
+ protected:
+  std::vector<Symbol> LoadSymbols() override { return {}; }
+};
+
 class UnknownDso : public Dso {
  public:
   UnknownDso(const std::string& path) : Dso(DSO_UNKNOWN_FILE, path, path) {}
 
-  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t, uint64_t) override {
-    return ip;
-  }
+  uint64_t IpToVaddrInFile(uint64_t ip, uint64_t, uint64_t) override { return ip; }
 
  protected:
-  std::vector<Symbol> LoadSymbols() override {
-    return std::vector<Symbol>();
-  }
+  std::vector<Symbol> LoadSymbols() override { return std::vector<Symbol>(); }
 };
 
 std::unique_ptr<Dso> Dso::CreateDso(DsoType dso_type, const std::string& dso_path,
                                     bool force_64bit) {
+  BuildId build_id = FindExpectedBuildIdForPath(dso_path);
+  std::string debug_path = debug_elf_file_finder_.FindDebugFile(dso_path, force_64bit, build_id);
   switch (dso_type) {
-    case DSO_ELF_FILE: {
-      BuildId build_id = FindExpectedBuildIdForPath(dso_path);
-      return std::unique_ptr<Dso>(new ElfDso(dso_path,
-          debug_elf_file_finder_.FindDebugFile(dso_path, force_64bit, build_id)));
-    }
+    case DSO_ELF_FILE:
+      return std::unique_ptr<Dso>(new ElfDso(dso_path, debug_path));
     case DSO_KERNEL:
-      return std::unique_ptr<Dso>(new KernelDso(dso_path, dso_path));
-    case DSO_KERNEL_MODULE: {
-      BuildId build_id = FindExpectedBuildIdForPath(dso_path);
-      return std::unique_ptr<Dso>(new KernelModuleDso(
-          dso_path, debug_elf_file_finder_.FindDebugFile(dso_path, force_64bit, build_id)));
-    }
+      return std::unique_ptr<Dso>(new KernelDso(dso_path, debug_path));
+    case DSO_KERNEL_MODULE:
+      return std::unique_ptr<Dso>(new KernelModuleDso(dso_path, debug_path));
     case DSO_DEX_FILE:
       return std::unique_ptr<Dso>(new DexFileDso(dso_path, dso_path));
+    case DSO_SYMBOL_MAP_FILE:
+      return std::unique_ptr<Dso>(new SymbolMapFileDso(dso_path));
     case DSO_UNKNOWN_FILE:
       return std::unique_ptr<Dso>(new UnknownDso(dso_path));
     default:
@@ -731,6 +834,8 @@ const char* DsoTypeToString(DsoType dso_type) {
       return "dso_elf_file";
     case DSO_DEX_FILE:
       return "dso_dex_file";
+    case DSO_SYMBOL_MAP_FILE:
+      return "dso_symbol_map_file";
     default:
       return "unknown";
   }

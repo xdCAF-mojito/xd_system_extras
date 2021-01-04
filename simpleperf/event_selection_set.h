@@ -25,13 +25,15 @@
 
 #include <android-base/macros.h>
 
+#include "IOEventLoop.h"
+#include "RecordReadThread.h"
 #include "event_attr.h"
 #include "event_fd.h"
 #include "event_type.h"
-#include "IOEventLoop.h"
 #include "perf_event.h"
 #include "record.h"
-#include "RecordReadThread.h"
+
+namespace simpleperf {
 
 constexpr double DEFAULT_PERIOD_TO_CHECK_MONITORED_TARGETS_IN_SEC = 1;
 constexpr uint64_t DEFAULT_SAMPLE_FREQ_FOR_NONTRACEPOINT_EVENT = 4000;
@@ -112,6 +114,7 @@ class EventSelectionSet {
   bool ExcludeKernel() const;
   bool HasAuxTrace() const { return has_aux_trace_; }
   std::vector<EventAttrWithId> GetEventAttrWithId() const;
+  std::unordered_map<uint64_t, std::string> GetEventNamesById() const;
 
   void SetEnableOnExec(bool enable);
   bool GetEnableOnExec();
@@ -125,9 +128,8 @@ class EventSelectionSet {
   bool NeedKernelSymbol() const;
   void SetRecordNotExecutableMaps(bool record);
   bool RecordNotExecutableMaps() const;
-  void SetAddrFilters(std::vector<AddrFilter>&& filters) {
-    addr_filters_ = std::move(filters);
-  }
+  void WakeupPerSample();
+  void SetAddrFilters(std::vector<AddrFilter>&& filters) { addr_filters_ = std::move(filters); }
   bool SetTracepointFilter(const std::string& filter);
 
   template <typename Collection = std::vector<pid_t>>
@@ -149,13 +151,9 @@ class EventSelectionSet {
     threads_.clear();
   }
 
-  bool HasMonitoredTarget() const {
-    return !processes_.empty() || !threads_.empty();
-  }
+  bool HasMonitoredTarget() const { return !processes_.empty() || !threads_.empty(); }
 
-  IOEventLoop* GetIOEventLoop() {
-    return loop_.get();
-  }
+  IOEventLoop* GetIOEventLoop() { return loop_.get(); }
 
   // If cpus = {}, monitor on all cpus, with a perf event file for each cpu.
   // If cpus = {-1}, monitor on all cpus, with a perf event file shared by all cpus.
@@ -167,14 +165,13 @@ class EventSelectionSet {
   bool PrepareToReadMmapEventData(const std::function<bool(Record*)>& callback);
   bool SyncKernelBuffer();
   bool FinishReadMmapEventData();
+  void CloseEventFiles();
 
-  const simpleperf::RecordStat& GetRecordStat() {
-    return record_read_thread_->GetStat();
-  }
+  const simpleperf::RecordStat& GetRecordStat() { return record_read_thread_->GetStat(); }
 
   // Stop profiling if all monitored processes/threads don't exist.
-  bool StopWhenNoMoreTargets(double check_interval_in_sec =
-                                 DEFAULT_PERIOD_TO_CHECK_MONITORED_TARGETS_IN_SEC);
+  bool StopWhenNoMoreTargets(
+      double check_interval_in_sec = DEFAULT_PERIOD_TO_CHECK_MONITORED_TARGETS_IN_SEC);
 
   bool SetEnableEvents(bool enable);
 
@@ -225,5 +222,7 @@ bool IsDwarfCallChainSamplingSupported();
 bool IsDumpingRegsForTracepointEventsSupported();
 bool IsSettingClockIdSupported();
 bool IsMmap2Supported();
+
+}  // namespace simpleperf
 
 #endif  // SIMPLE_PERF_EVENT_SELECTION_SET_H_

@@ -55,10 +55,10 @@ import unittest
 from app_profiler import NativeLibDownloader
 from binary_cache_builder import BinaryCacheBuilder
 from simpleperf_report_lib import ReportLib
-from utils import log_exit, log_info, log_fatal
-from utils import AdbHelper, Addr2Nearestline, bytes_to_str, find_tool_path, get_script_dir
-from utils import is_elf_file, is_python3, is_windows, Objdump, ReadElf, remove, SourceFileSearcher
-from utils import str_to_bytes
+from simpleperf_utils import (
+    AdbHelper, Addr2Nearestline, bytes_to_str, find_tool_path, get_script_dir, is_elf_file,
+    is_python3, is_windows, log_exit, log_info, log_fatal, Objdump, ReadElf, remove,
+    SourceFileSearcher, str_to_bytes)
 
 try:
     # pylint: disable=unused-import
@@ -1098,6 +1098,20 @@ class TestReportLib(TestBase):
         report_lib.MergeJavaMethods(False)
         self.assertEqual(parse_dso_names(report_lib), (True, False))
 
+    def test_jited_java_methods(self):
+        report_lib = ReportLib()
+        report_lib.SetRecordFile(TEST_HELPER.testdata_path('perf_with_jit_symbol.data'))
+        has_jit_cache = False
+        while report_lib.GetNextSample():
+            if report_lib.GetSymbolOfCurrentSample().dso_name == '[JIT app cache]':
+                has_jit_cache = True
+            callchain = report_lib.GetCallChainOfCurrentSample()
+            for i in range(callchain.nr):
+                if callchain.entries[i].symbol.dso_name == '[JIT app cache]':
+                    has_jit_cache = True
+        report_lib.Close()
+        self.assertTrue(has_jit_cache)
+
     def test_tracing_data(self):
         self.report_lib.SetRecordFile(TEST_HELPER.testdata_path('perf_with_tracepoint_event.data'))
         has_tracing_data = False
@@ -1113,6 +1127,22 @@ class TestReportLib(TestBase):
             else:
                 self.assertIsNone(tracing_data)
         self.assertTrue(has_tracing_data)
+
+    def test_dynamic_field_in_tracing_data(self):
+        self.report_lib.SetRecordFile(TEST_HELPER.testdata_path(
+            'perf_with_tracepoint_event_dynamic_field.data'))
+        has_dynamic_field = False
+        while self.report_lib.GetNextSample():
+            event = self.report_lib.GetEventOfCurrentSample()
+            tracing_data = self.report_lib.GetTracingDataOfCurrentSample()
+            if event.name == 'kprobes:myopen':
+                self.assertIsNotNone(tracing_data)
+                self.assertIn('name', tracing_data)
+                if tracing_data['name'] == '/sys/kernel/debug/tracing/events/kprobes/myopen/format':
+                    has_dynamic_field = True
+            else:
+                self.assertIsNone(tracing_data)
+        self.assertTrue(has_dynamic_field)
 
 
 class TestRunSimpleperfOnDevice(TestBase):

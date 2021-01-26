@@ -50,7 +50,7 @@
 #include "utils.h"
 #include "workload.h"
 
-using namespace simpleperf;
+namespace simpleperf {
 
 std::vector<int> GetOnlineCpus() {
   std::vector<int> result;
@@ -405,12 +405,24 @@ bool SetPerfEventMlockKb(uint64_t mlock_kb) {
 }
 
 ArchType GetMachineArch() {
+#if defined(__i386__)
+  // For 32 bit x86 build, we can't get machine arch by uname().
+  ArchType arch = ARCH_UNSUPPORTED;
+  std::unique_ptr<FILE, decltype(&pclose)> fp(popen("uname -m", "re"), pclose);
+  if (fp) {
+    char machine[40];
+    if (fgets(machine, sizeof(machine), fp.get()) == machine) {
+      arch = GetArchType(android::base::Trim(machine));
+    }
+  }
+#else
   utsname uname_buf;
   if (TEMP_FAILURE_RETRY(uname(&uname_buf)) != 0) {
     PLOG(WARNING) << "uname() failed";
     return GetBuildArch();
   }
   ArchType arch = GetArchType(uname_buf.machine);
+#endif
   if (arch != ARCH_UNSUPPORTED) {
     return arch;
   }
@@ -893,10 +905,15 @@ const char* GetTraceFsDir() {
   return tracefs_dir;
 }
 
-bool GetKernelVersion(int* major, int* minor) {
+std::optional<std::pair<int, int>> GetKernelVersion() {
   utsname uname_buf;
-  if (TEMP_FAILURE_RETRY(uname(&uname_buf)) != 0) {
-    return false;
+  int major;
+  int minor;
+  if (TEMP_FAILURE_RETRY(uname(&uname_buf)) != 0 ||
+      sscanf(uname_buf.release, "%d.%d", &major, &minor) != 2) {
+    return std::nullopt;
   }
-  return sscanf(uname_buf.release, "%d.%d", major, minor) == 2;
+  return std::make_pair(major, minor);
 }
+
+}  // namespace simpleperf

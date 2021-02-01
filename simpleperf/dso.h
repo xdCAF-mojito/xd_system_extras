@@ -28,6 +28,7 @@
 #include <android-base/logging.h>
 
 #include "build_id.h"
+#include "kallsyms.h"
 #include "read_elf.h"
 
 namespace simpleperf_dso_impl {
@@ -105,9 +106,6 @@ enum DsoType {
   // may cause compatibility issue. So put new DsoTypes below.
 };
 
-struct KernelSymbol;
-struct ElfFileSymbol;
-
 class Dso {
  public:
   static void SetDemangle(bool demangle);
@@ -125,7 +123,6 @@ class Dso {
       kallsyms_ = std::move(kallsyms);
     }
   }
-  static void ReadKernelSymbolsFromProc() { read_kernel_symbols_from_proc_ = true; }
   static void SetBuildIds(const std::vector<std::pair<std::string, BuildId>>& build_ids);
   static BuildId FindExpectedBuildIdForPath(const std::string& path);
   static void SetVdsoFile(const std::string& vdso_file, bool is_64bit);
@@ -134,6 +131,9 @@ class Dso {
                                         bool force_64bit = false);
   static std::unique_ptr<Dso> CreateElfDsoWithBuildId(const std::string& dso_path,
                                                       BuildId& build_id);
+  static std::unique_ptr<Dso> CreateKernelModuleDso(const std::string& dso_path,
+                                                    uint64_t memory_start, uint64_t memory_end,
+                                                    Dso* kernel_dso);
   virtual ~Dso();
 
   DsoType type() const { return type_; }
@@ -173,7 +173,7 @@ class Dso {
                                                  uint64_t map_pgoff);
 
   const Symbol* FindSymbol(uint64_t vaddr_in_dso);
-
+  void LoadSymbols();
   const std::vector<Symbol>& GetSymbols() { return symbols_; }
   void SetSymbols(std::vector<Symbol>* symbols);
 
@@ -186,7 +186,6 @@ class Dso {
   static bool demangle_;
   static std::string vmlinux_;
   static std::string kallsyms_;
-  static bool read_kernel_symbols_from_proc_;
   static std::unordered_map<std::string, BuildId> build_id_map_;
   static size_t dso_count_;
   static uint32_t g_dump_id_;
@@ -195,8 +194,7 @@ class Dso {
   Dso(DsoType type, const std::string& path, const std::string& debug_file_path);
   BuildId GetExpectedBuildId();
 
-  void Load();
-  virtual std::vector<Symbol> LoadSymbols() = 0;
+  virtual std::vector<Symbol> LoadSymbolsImpl() = 0;
 
   DsoType type_;
   // path of the shared library used by the profiled program

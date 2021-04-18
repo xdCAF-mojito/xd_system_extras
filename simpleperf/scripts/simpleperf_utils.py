@@ -29,14 +29,18 @@ import subprocess
 import sys
 import time
 
+
 def get_script_dir():
     return os.path.dirname(os.path.realpath(__file__))
+
 
 def is_windows():
     return sys.platform == 'win32' or sys.platform == 'cygwin'
 
+
 def is_darwin():
     return sys.platform == 'darwin'
+
 
 def get_platform():
     if is_windows():
@@ -44,6 +48,7 @@ def get_platform():
     if is_darwin():
         return 'darwin'
     return 'linux'
+
 
 def is_python3():
     return sys.version_info >= (3, 0)
@@ -64,11 +69,14 @@ def log_warning(msg):
 def log_fatal(msg):
     raise Exception(msg)
 
+
 def log_exit(msg):
     sys.exit(msg)
 
+
 def disable_debug_log():
     logging.getLogger().setLevel(logging.WARN)
+
 
 def set_log_level(level_name):
     if level_name == 'debug':
@@ -81,6 +89,7 @@ def set_log_level(level_name):
         log_fatal('unknown log level: %s' % level_name)
     logging.getLogger().setLevel(level)
 
+
 def str_to_bytes(str_value):
     if not is_python3():
         return str_value
@@ -88,12 +97,14 @@ def str_to_bytes(str_value):
     # hence we have to convert. For now using utf-8 as the encoding.
     return str_value.encode('utf-8')
 
+
 def bytes_to_str(bytes_value):
     if not bytes_value:
         return ''
     if not is_python3():
         return bytes_value
     return bytes_value.decode('utf-8')
+
 
 def get_target_binary_path(arch, binary_name):
     if arch == 'aarch64':
@@ -115,7 +126,7 @@ def get_host_binary_path(binary_name):
         elif '.' not in binary_name:
             binary_name += '.exe'
         dirname = os.path.join(dirname, 'windows')
-    elif sys.platform == 'darwin': # OSX
+    elif sys.platform == 'darwin':  # OSX
         if binary_name.endswith('.so'):
             binary_name = binary_name[0:-3] + '.dylib'
         dirname = os.path.join(dirname, 'darwin')
@@ -153,9 +164,15 @@ class ToolFinder:
             'test_option': 'version',
             'path_in_sdk': 'platform-tools/adb',
         },
-        'readelf': {
-            'is_binutils': True,
-            'accept_tool_without_arch': True,
+        'llvm-objdump': {
+            'is_binutils': False,
+            'path_in_ndk':
+                lambda platform: 'toolchains/llvm/prebuilt/%s-x86_64/bin/llvm-objdump' % platform,
+        },
+        'llvm-readelf': {
+            'is_binutils': False,
+            'path_in_ndk':
+                lambda platform: 'toolchains/llvm/prebuilt/%s-x86_64/bin/llvm-readelf' % platform,
         },
         'llvm-symbolizer': {
             'is_binutils': False,
@@ -286,10 +303,8 @@ class AdbHelper(object):
         self.enable_switch_to_root = enable_switch_to_root
         self.serial_number = None
 
-
     def run(self, adb_args):
         return self.run_and_return_output(adb_args)[0]
-
 
     def run_and_return_output(self, adb_args, log_output=True, log_stderr=True):
         adb_args = [self.adb_path] + adb_args
@@ -315,13 +330,11 @@ class AdbHelper(object):
     def check_run(self, adb_args):
         self.check_run_and_return_output(adb_args)
 
-
     def check_run_and_return_output(self, adb_args, stdout_file=None, log_output=True):
         result, stdoutdata = self.run_and_return_output(adb_args, stdout_file, log_output)
         if not result:
             log_exit('run "adb %s" failed' % adb_args)
         return stdoutdata
-
 
     def _unroot(self):
         result, stdoutdata = self.run_and_return_output(['shell', 'whoami'])
@@ -333,7 +346,6 @@ class AdbHelper(object):
         self.run(['unroot'])
         self.run(['wait-for-device'])
         time.sleep(1)
-
 
     def switch_to_root(self):
         if not self.enable_switch_to_root:
@@ -360,7 +372,6 @@ class AdbHelper(object):
     def set_property(self, name, value):
         return self.run(['shell', 'setprop', name, value])
 
-
     def get_device_arch(self):
         output = self.check_run_and_return_output(['shell', 'uname', '-m'])
         if 'aarch64' in output:
@@ -373,7 +384,6 @@ class AdbHelper(object):
             return 'x86'
         log_fatal('unsupported architecture: %s' % output.strip())
         return ''
-
 
     def get_android_version(self):
         """ Get Android version on device, like 7 is for Android N, 8 is for Android O."""
@@ -423,11 +433,13 @@ def open_report_in_browser(report_path):
         # webbrowser.get() doesn't work well on darwin/windows.
         webbrowser.open_new_tab(report_path)
 
+
 def is_elf_file(path):
     if os.path.isfile(path):
         with open(path, 'rb') as fh:
             return fh.read(4) == b'\x7fELF'
     return False
+
 
 def find_real_dso_path(dso_path_in_record_file, binary_cache_path):
     """ Given the path of a shared library in perf.data, find its real path in the file system. """
@@ -471,6 +483,7 @@ class Addr2Nearestline(object):
         """ Info of a dynamic shared library.
             addrs: a map from address to Addr object in this dso.
         """
+
         def __init__(self):
             self.addrs = {}
 
@@ -480,6 +493,7 @@ class Addr2Nearestline(object):
             source_lines: a list of [file_id, line_number] for addr.
                           source_lines[:-1] are all for inlined functions.
         """
+
         def __init__(self, func_addr):
             self.func_addr = func_addr
             self.source_lines = None
@@ -612,11 +626,11 @@ class Addr2Nearestline(object):
                     break
 
     def _build_symbolizer_args(self, binary_path):
-        args = [self.symbolizer_path, '-print-address', '-inlining', '-obj=%s' % binary_path]
+        args = [self.symbolizer_path, '--print-address', '--inlining', '--obj=%s' % binary_path]
         if self.with_function_name:
-            args += ['-functions=linkage', '-demangle']
+            args += ['--functions=linkage', '--demangle']
         else:
-            args.append('-functions=none')
+            args.append('--functions=none')
         return args
 
     def _parse_source_location(self, line):
@@ -726,6 +740,7 @@ class SourceFileSearcher(object):
 
 class Objdump(object):
     """ A wrapper of objdump to disassemble code. """
+
     def __init__(self, ndk_path, binary_cache_path):
         self.ndk_path = ndk_path
         self.binary_cache_path = binary_cache_path
@@ -748,9 +763,14 @@ class Objdump(object):
         real_path, arch = dso_info
         objdump_path = self.objdump_paths.get(arch)
         if not objdump_path:
-            objdump_path = find_tool_path('objdump', self.ndk_path, arch)
+            if arch == 'arm':
+                # llvm-objdump for arm is not good at showing branch targets.
+                # So still prefer objdump.
+                objdump_path = find_tool_path('objdump', self.ndk_path, arch)
             if not objdump_path:
-                log_exit("Can't find objdump. Please set ndk path with --ndk_path option.")
+                objdump_path = find_tool_path('llvm-objdump', self.ndk_path, arch)
+            if not objdump_path:
+                log_exit("Can't find llvm-objdump. Please set ndk path with --ndk_path option.")
             self.objdump_paths[arch] = objdump_path
 
         # 3. Run objdump.
@@ -758,6 +778,8 @@ class Objdump(object):
                 '--start-address=0x%x' % start_addr,
                 '--stop-address=0x%x' % (start_addr + addr_len),
                 real_path]
+        if arch == 'arm' and 'llvm-objdump' in objdump_path:
+            args += ['--print-imm-hex']
         try:
             subproc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             (stdoutdata, _) = subproc.communicate()
@@ -781,10 +803,11 @@ class Objdump(object):
 
 class ReadElf(object):
     """ A wrapper of readelf. """
+
     def __init__(self, ndk_path):
-        self.readelf_path = find_tool_path('readelf', ndk_path)
+        self.readelf_path = find_tool_path('llvm-readelf', ndk_path)
         if not self.readelf_path:
-            log_exit("Can't find readelf. Please set ndk path with --ndk_path option.")
+            log_exit("Can't find llvm-readelf. Please set ndk path with --ndk_path option.")
 
     def get_arch(self, elf_file_path):
         """ Get arch of an elf file. """
@@ -847,6 +870,7 @@ class ReadElf(object):
                 pass
         return section_names
 
+
 def extant_dir(arg):
     """ArgumentParser type that only accepts extant directories.
 
@@ -861,6 +885,7 @@ def extant_dir(arg):
         raise argparse.ArgumentTypeError('{} is not a directory.'.format(path))
     return path
 
+
 def extant_file(arg):
     """ArgumentParser type that only accepts extant files.
 
@@ -874,5 +899,11 @@ def extant_file(arg):
     if not os.path.isfile(path):
         raise argparse.ArgumentTypeError('{} is not a file.'.format(path))
     return path
+
+
+class ArgParseFormatter(
+        argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    pass
+
 
 logging.getLogger().setLevel(logging.DEBUG)

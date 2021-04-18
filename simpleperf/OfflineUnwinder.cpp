@@ -45,11 +45,27 @@
 #include "read_apk.h"
 #include "thread_tree.h"
 
-static_assert(simpleperf::map_flags::PROT_JIT_SYMFILE_MAP ==
-                  unwindstack::MAPS_FLAGS_JIT_SYMFILE_MAP,
-              "");
-
 namespace simpleperf {
+
+// unwindstack only builds on linux. So simpleperf redefines flags in unwindstack, to use them on
+// darwin/windows. Use static_assert to make sure they are on the same page.
+static_assert(map_flags::PROT_JIT_SYMFILE_MAP == unwindstack::MAPS_FLAGS_JIT_SYMFILE_MAP);
+
+#define CHECK_ERROR_CODE(error_code_name) \
+  static_assert(UnwindStackErrorCode::error_code_name == unwindstack::ErrorCode::error_code_name)
+
+CHECK_ERROR_CODE(ERROR_NONE);
+CHECK_ERROR_CODE(ERROR_MEMORY_INVALID);
+CHECK_ERROR_CODE(ERROR_UNWIND_INFO);
+CHECK_ERROR_CODE(ERROR_UNSUPPORTED);
+CHECK_ERROR_CODE(ERROR_INVALID_MAP);
+CHECK_ERROR_CODE(ERROR_MAX_FRAMES_EXCEEDED);
+CHECK_ERROR_CODE(ERROR_REPEATED_FRAME);
+CHECK_ERROR_CODE(ERROR_INVALID_ELF);
+CHECK_ERROR_CODE(ERROR_THREAD_DOES_NOT_EXIST);
+CHECK_ERROR_CODE(ERROR_THREAD_TIMEOUT);
+CHECK_ERROR_CODE(ERROR_SYSTEM_CALL);
+CHECK_ERROR_CODE(ERROR_MAX);
 
 // Max frames seen so far is 463, in http://b/110923759.
 static constexpr size_t MAX_UNWINDING_FRAMES = 512;
@@ -293,29 +309,8 @@ bool OfflineUnwinderImpl::UnwindCallChain(const ThreadEntry& thread, const RegSe
   }
   if (collect_stat_) {
     unwinding_result_.used_time = GetSystemClock() - start_time;
-    switch (unwinder.LastErrorCode()) {
-      case unwindstack::ERROR_MAX_FRAMES_EXCEEDED:
-        unwinding_result_.stop_reason = UnwindingResult::EXCEED_MAX_FRAMES_LIMIT;
-        break;
-      case unwindstack::ERROR_MEMORY_INVALID: {
-        uint64_t addr = unwinder.LastErrorAddress();
-        // Because we don't have precise stack range here, just guess an addr is in stack
-        // if sp - 128K <= addr <= sp.
-        if (addr <= stack_addr && addr >= stack_addr - 128 * 1024) {
-          unwinding_result_.stop_reason = UnwindingResult::ACCESS_STACK_FAILED;
-        } else {
-          unwinding_result_.stop_reason = UnwindingResult::ACCESS_MEM_FAILED;
-        }
-        unwinding_result_.stop_info.addr = addr;
-        break;
-      }
-      case unwindstack::ERROR_INVALID_MAP:
-        unwinding_result_.stop_reason = UnwindingResult::MAP_MISSING;
-        break;
-      default:
-        unwinding_result_.stop_reason = UnwindingResult::UNKNOWN_REASON;
-        break;
-    }
+    unwinding_result_.error_code = unwinder.LastErrorCode();
+    unwinding_result_.error_addr = unwinder.LastErrorAddress();
     unwinding_result_.stack_start = stack_addr;
     unwinding_result_.stack_end = stack_addr + stack_size;
   }

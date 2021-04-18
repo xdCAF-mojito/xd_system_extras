@@ -761,11 +761,12 @@ void SampleRecord::DumpData(size_t indent) const {
   }
   if (sample_type & PERF_SAMPLE_REGS_USER) {
     PrintIndented(indent, "user regs: abi=%" PRId64 "\n", regs_user_data.abi);
-    for (size_t i = 0, pos = 0; i < 64; ++i) {
-      if ((regs_user_data.reg_mask >> i) & 1) {
-        PrintIndented(indent + 1, "reg (%s) 0x%016" PRIx64 "\n",
-                      GetRegName(i, ScopedCurrentArch::GetCurrentArch()).c_str(),
-                      regs_user_data.regs[pos++]);
+    RegSet regs(regs_user_data.abi, regs_user_data.reg_mask, regs_user_data.regs);
+    for (size_t i = 0; i < 64; ++i) {
+      uint64_t value;
+      if (regs.GetRegValue(i, &value)) {
+        PrintIndented(indent + 1, "reg (%s) 0x%016" PRIx64 "\n", GetRegName(i, regs.arch).c_str(),
+                      value);
       }
     }
   }
@@ -1229,57 +1230,120 @@ UnwindingResultRecord::UnwindingResultRecord(char* p) : Record(p) {
   p += header_size();
   MoveFromBinaryFormat(time, p);
   MoveFromBinaryFormat(unwinding_result.used_time, p);
-  uint64_t stop_reason;
-  MoveFromBinaryFormat(stop_reason, p);
-  unwinding_result.stop_reason = static_cast<decltype(unwinding_result.stop_reason)>(stop_reason);
-  MoveFromBinaryFormat(unwinding_result.stop_info, p);
+  MoveFromBinaryFormat(unwinding_result.error_code, p);
+  MoveFromBinaryFormat(unwinding_result.error_addr, p);
   MoveFromBinaryFormat(unwinding_result.stack_start, p);
   MoveFromBinaryFormat(unwinding_result.stack_end, p);
-  CHECK_EQ(p, end);
+
+  // regs_user_data
+  MoveFromBinaryFormat(regs_user_data.abi, p);
+  MoveFromBinaryFormat(regs_user_data.reg_mask, p);
+  size_t bit_nr = __builtin_popcountll(regs_user_data.reg_mask);
+  regs_user_data.reg_nr = bit_nr;
+  regs_user_data.regs = reinterpret_cast<uint64_t*>(p);
+  p += bit_nr * sizeof(uint64_t);
+
+  // stack_user_data
+  MoveFromBinaryFormat(stack_user_data.size, p);
+  if (stack_user_data.size == 0) {
+    stack_user_data.dyn_size = 0;
+  } else {
+    stack_user_data.data = p;
+    p += stack_user_data.size;
+    MoveFromBinaryFormat(stack_user_data.dyn_size, p);
+  }
+
+  // callchain
+  if (p < end) {
+    MoveFromBinaryFormat(callchain.length, p);
+    callchain.ips = reinterpret_cast<uint64_t*>(p);
+    p += callchain.length * sizeof(uint64_t);
+    callchain.sps = reinterpret_cast<uint64_t*>(p);
+    p += callchain.length * sizeof(uint64_t);
+  }
+  CHECK_LE(p, end);
 }
 
-UnwindingResultRecord::UnwindingResultRecord(uint64_t time,
-                                             const UnwindingResult& unwinding_result) {
+UnwindingResultRecord::UnwindingResultRecord(uint64_t time, const UnwindingResult& unwinding_result,
+                                             const PerfSampleRegsUserType& regs_user_data,
+                                             const PerfSampleStackUserType& stack_user_data,
+                                             const std::vector<uint64_t>& ips,
+                                             const std::vector<uint64_t>& sps) {
   SetTypeAndMisc(SIMPLE_PERF_RECORD_UNWINDING_RESULT, 0);
-  SetSize(header_size() + 6 * sizeof(uint64_t));
+  uint32_t size = header_size() + 6 * sizeof(uint64_t);
+  size += (2 + regs_user_data.reg_nr) * sizeof(uint64_t);
+  size +=
+      stack_user_data.size == 0 ? sizeof(uint64_t) : (2 * sizeof(uint64_t) + stack_user_data.size);
+  CHECK_EQ(ips.size(), sps.size());
+  size += (1 + ips.size() * 2) * sizeof(uint64_t);
+  SetSize(size);
   this->time = time;
   this->unwinding_result = unwinding_result;
-  char* new_binary = new char[size()];
+  char* new_binary = new char[size];
   char* p = new_binary;
   MoveToBinaryFormat(header, p);
   MoveToBinaryFormat(this->time, p);
   MoveToBinaryFormat(unwinding_result.used_time, p);
-  uint64_t stop_reason = unwinding_result.stop_reason;
-  MoveToBinaryFormat(stop_reason, p);
-  MoveToBinaryFormat(unwinding_result.stop_info, p);
+  MoveToBinaryFormat(unwinding_result.error_code, p);
+  MoveToBinaryFormat(unwinding_result.error_addr, p);
   MoveToBinaryFormat(unwinding_result.stack_start, p);
   MoveToBinaryFormat(unwinding_result.stack_end, p);
+  MoveToBinaryFormat(regs_user_data.abi, p);
+  MoveToBinaryFormat(regs_user_data.reg_mask, p);
+  if (regs_user_data.reg_nr > 0) {
+    MoveToBinaryFormat(regs_user_data.regs, regs_user_data.reg_nr, p);
+  }
+  MoveToBinaryFormat(stack_user_data.size, p);
+  if (stack_user_data.size > 0) {
+    MoveToBinaryFormat(stack_user_data.data, stack_user_data.size, p);
+    MoveToBinaryFormat(stack_user_data.dyn_size, p);
+  }
+  MoveToBinaryFormat(static_cast<uint64_t>(ips.size()), p);
+  MoveToBinaryFormat(ips.data(), ips.size(), p);
+  MoveToBinaryFormat(sps.data(), sps.size(), p);
+  CHECK_EQ(p, new_binary + size);
   UpdateBinary(new_binary);
 }
 
 void UnwindingResultRecord::DumpData(size_t indent) const {
   PrintIndented(indent, "time %" PRIu64 "\n", time);
   PrintIndented(indent, "used_time %" PRIu64 "\n", unwinding_result.used_time);
-  static std::unordered_map<int, std::string> map = {
-      {UnwindingResult::UNKNOWN_REASON, "UNKNOWN_REASON"},
-      {UnwindingResult::EXCEED_MAX_FRAMES_LIMIT, "EXCEED_MAX_FRAME_LIMIT"},
-      {UnwindingResult::ACCESS_REG_FAILED, "ACCESS_REG_FAILED"},
-      {UnwindingResult::ACCESS_STACK_FAILED, "ACCESS_STACK_FAILED"},
-      {UnwindingResult::ACCESS_MEM_FAILED, "ACCESS_MEM_FAILED"},
-      {UnwindingResult::FIND_PROC_INFO_FAILED, "FIND_PROC_INFO_FAILED"},
-      {UnwindingResult::EXECUTE_DWARF_INSTRUCTION_FAILED, "EXECUTE_DWARF_INSTRUCTION_FAILED"},
-      {UnwindingResult::DIFFERENT_ARCH, "DIFFERENT_ARCH"},
-      {UnwindingResult::MAP_MISSING, "MAP_MISSING"},
-  };
-  PrintIndented(indent, "stop_reason %s\n", map[unwinding_result.stop_reason].c_str());
-  if (unwinding_result.stop_reason == UnwindingResult::ACCESS_REG_FAILED) {
-    PrintIndented(indent, "regno %" PRIu64 "\n", unwinding_result.stop_info);
-  } else if (unwinding_result.stop_reason == UnwindingResult::ACCESS_STACK_FAILED ||
-             unwinding_result.stop_reason == UnwindingResult::ACCESS_MEM_FAILED) {
-    PrintIndented(indent, "addr 0x%" PRIx64 "\n", unwinding_result.stop_info);
-  }
+  PrintIndented(indent, "error_code %" PRIu64 "\n", unwinding_result.error_code);
+  PrintIndented(indent, "error_addr 0x%" PRIx64 "\n", unwinding_result.error_addr);
   PrintIndented(indent, "stack_start 0x%" PRIx64 "\n", unwinding_result.stack_start);
   PrintIndented(indent, "stack_end 0x%" PRIx64 "\n", unwinding_result.stack_end);
+  if (regs_user_data.reg_nr > 0) {
+    PrintIndented(indent, "user regs: abi=%" PRId64 "\n", regs_user_data.abi);
+    RegSet regs(regs_user_data.abi, regs_user_data.reg_mask, regs_user_data.regs);
+    for (size_t i = 0; i < 64; ++i) {
+      uint64_t value;
+      if (regs.GetRegValue(i, &value)) {
+        PrintIndented(indent + 1, "reg (%s) 0x%016" PRIx64 "\n", GetRegName(i, regs.arch).c_str(),
+                      value);
+      }
+    }
+  }
+  if (stack_user_data.size > 0) {
+    PrintIndented(indent, "user stack: size %zu dyn_size %" PRIu64 "\n", stack_user_data.size,
+                  stack_user_data.dyn_size);
+    const uint64_t* p = reinterpret_cast<const uint64_t*>(stack_user_data.data);
+    const uint64_t* end = p + (stack_user_data.size / sizeof(uint64_t));
+    while (p < end) {
+      PrintIndented(indent + 1, "");
+      for (size_t i = 0; i < 4 && p < end; ++i, ++p) {
+        printf(" %016" PRIx64, *p);
+      }
+      printf("\n");
+    }
+    printf("\n");
+  }
+  if (callchain.length > 0) {
+    PrintIndented(indent, "callchain length=%" PRIu64 ":\n", callchain.length);
+    for (uint64_t i = 0; i < callchain.length; i++) {
+      PrintIndented(indent + 1, "ip_%" PRIu64 ": 0x%" PRIx64 "\n", i + 1, callchain.ips[i]);
+      PrintIndented(indent + 1, "sp_%" PRIu64 ": 0x%" PRIx64 "\n", i + 1, callchain.sps[i]);
+    }
+  }
 }
 
 UnknownRecord::UnknownRecord(char* p) : Record(p) {

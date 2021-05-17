@@ -216,13 +216,17 @@ Symbol::Symbol(std::string_view name, uint64_t addr, uint64_t len)
 const char* Symbol::DemangledName() const {
   if (demangled_name_ == nullptr) {
     const std::string s = Dso::Demangle(name_);
-    if (s == name_) {
-      demangled_name_ = name_;
-    } else {
-      demangled_name_ = symbol_name_allocator.AllocateString(s);
-    }
+    SetDemangledName(s);
   }
   return demangled_name_;
+}
+
+void Symbol::SetDemangledName(std::string_view name) const {
+  if (name == name_) {
+    demangled_name_ = name_;
+  } else {
+    demangled_name_ = symbol_name_allocator.AllocateString(name);
+  }
 }
 
 static bool CompareSymbolToAddr(const Symbol& s, uint64_t addr) {
@@ -465,9 +469,8 @@ class DexFileDso : public Dso {
     std::vector<Symbol> symbols;
     auto tuple = SplitUrlInApk(debug_file_path_);
     bool status = false;
-    auto symbol_callback = [&](DexFileSymbol* dex_symbol) {
-      symbols.emplace_back(std::string_view(dex_symbol->name, dex_symbol->name_size),
-                           dex_symbol->addr, dex_symbol->size);
+    auto symbol_callback = [&](DexFileSymbol* symbol) {
+      symbols.emplace_back(symbol->name, symbol->addr, symbol->size);
     };
     if (std::get<0>(tuple)) {
       std::unique_ptr<ArchiveHelper> ahelper = ArchiveHelper::CreateInstance(std::get<1>(tuple));
@@ -910,9 +913,20 @@ std::unique_ptr<Dso> Dso::CreateDso(DsoType dso_type, const std::string& dso_pat
   return nullptr;
 }
 
-std::unique_ptr<Dso> Dso::CreateElfDsoWithBuildId(const std::string& dso_path, BuildId& build_id) {
-  return std::unique_ptr<Dso>(
-      new ElfDso(dso_path, debug_elf_file_finder_.FindDebugFile(dso_path, false, build_id)));
+std::unique_ptr<Dso> Dso::CreateDsoWithBuildId(DsoType dso_type, const std::string& dso_path,
+                                               BuildId& build_id) {
+  std::string debug_path = debug_elf_file_finder_.FindDebugFile(dso_path, false, build_id);
+  switch (dso_type) {
+    case DSO_ELF_FILE:
+      return std::unique_ptr<Dso>(new ElfDso(dso_path, debug_path));
+    case DSO_KERNEL:
+      return std::unique_ptr<Dso>(new KernelDso(dso_path, debug_path));
+    case DSO_KERNEL_MODULE:
+      return std::unique_ptr<Dso>(new KernelModuleDso(dso_path, debug_path, 0, 0, nullptr));
+    default:
+      LOG(FATAL) << "Unexpected dso_type " << static_cast<int>(dso_type);
+  }
+  return nullptr;
 }
 
 std::unique_ptr<Dso> Dso::CreateKernelModuleDso(const std::string& dso_path, uint64_t memory_start,

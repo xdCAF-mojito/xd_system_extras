@@ -458,7 +458,13 @@ bool RecordCommand::Run(const std::vector<std::string>& args) {
   if (!AdjustPerfEventLimit()) {
     return false;
   }
-  ScopedTempFiles scoped_temp_files(android::base::Dirname(record_filename_));
+  std::unique_ptr<ScopedTempFiles> scoped_temp_files =
+      ScopedTempFiles::Create(android::base::Dirname(record_filename_));
+  if (!scoped_temp_files) {
+    PLOG(ERROR) << "Can't create output file in directory "
+                << android::base::Dirname(record_filename_);
+    return false;
+  }
   if (!app_package_name_.empty() && !in_app_context_) {
     // Some users want to profile non debuggable apps on rooted devices. If we use run-as,
     // it will be impossible when using --app. So don't switch to app's context when we are
@@ -1266,9 +1272,12 @@ bool RecordCommand::DumpMaps() {
       map_record_thread_.emplace(*map_record_reader_);
       return true;
     }
-    return map_record_reader_->ReadKernelMaps();
+    if (!event_selection_set_.ExcludeKernel()) {
+      return map_record_reader_->ReadKernelMaps();
+    }
+    return true;
   }
-  if (!map_record_reader_->ReadKernelMaps()) {
+  if (!event_selection_set_.ExcludeKernel() && !map_record_reader_->ReadKernelMaps()) {
     return false;
   }
   // Map from process id to a set of thread ids in that process.
@@ -1725,7 +1734,7 @@ bool RecordCommand::DumpAdditionalFeatures(const std::vector<std::string>& args)
   thread_tree_.ClearThreadAndMap();
   bool kernel_symbols_available = false;
   std::string kallsyms;
-  if (LoadKernelSymbols(&kallsyms)) {
+  if (event_selection_set_.NeedKernelSymbol() && LoadKernelSymbols(&kallsyms)) {
     Dso::SetKallsyms(kallsyms);
     kernel_symbols_available = true;
   }

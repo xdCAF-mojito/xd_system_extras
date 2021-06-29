@@ -66,7 +66,8 @@ class TestNativeLibDownloader(TestBase):
         super(TestNativeLibDownloader, self).tearDown()
 
     def list_lib_on_device(self, path):
-        result, output = self.adb.run_and_return_output(['shell', 'ls', '-llc', path])
+        result, output = self.adb.run_and_return_output(
+            ['shell', 'ls', '-llc', path], log_output=False)
         return output if result else ''
 
     def test_smoke(self):

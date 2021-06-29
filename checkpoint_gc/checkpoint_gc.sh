@@ -28,13 +28,10 @@ SLEEP=5
 TIME=0
 MAX_TIME=1200
 
-# We only need to run this if we're using f2fs
-if [ ! -f /dev/sys/fs/by-name/userdata/gc_urgent ]; then
+if [ ! -d /dev/sys/fs/by-name/userdata ]; then
   exit 0
 fi
 
-# Ideally we want to track unusable, as it directly measures what we
-# care about. If it's not present, dirty_segments is the best proxy.
 if [ -f /dev/sys/fs/by-name/userdata/unusable ]; then
   UNUSABLE=1
   METRIC="unusable blocks"
@@ -47,7 +44,9 @@ else
 fi
 
 log -pi -t checkpoint_gc Turning on GC for userdata
-echo 2 > /dev/sys/fs/by-name/userdata/gc_urgent || exit 1
+read OLD_SLEEP < /dev/sys/fs/by-name/userdata/gc_urgent_sleep_time || exit 1
+echo 50 > /dev/sys/fs/by-name/userdata/gc_urgent_sleep_time || exit 1
+echo 1 > /dev/sys/fs/by-name/userdata/gc_urgent || exit 1
 
 
 CURRENT=${START}
@@ -67,18 +66,15 @@ while [ ${CURRENT} -gt ${THRESHOLD} ]; do
   sleep ${SLEEP}
   TIME=$((${TIME}+${SLEEP}))
   if [ ${TIME} -gt ${MAX_TIME} ]; then
-    log -pi -t checkpoint_gc Timed out with gc threshold not met.
     break
   fi
   # In case someone turns it off behind our back
-  echo 2 > /dev/sys/fs/by-name/userdata/gc_urgent
+  echo 1 > /dev/sys/fs/by-name/userdata/gc_urgent
 done
 
-# It could be a while before the system reboots for the update...
-# Leaving on low level GC can help ensure the boot for ota is faster
-# If powerhints decides to turn it off, we'll just rely on normal GC
-log -pi -t checkpoint_gc Leaving on low GC for userdata
-echo 2 > /dev/sys/fs/by-name/userdata/gc_urgent
+log -pi -t checkpoint_gc Turning off GC for userdata
+echo 0 > /dev/sys/fs/by-name/userdata/gc_urgent
+echo ${OLD_SLEEP} > /dev/sys/fs/by-name/userdata/gc_urgent_sleep_time
 sync
 
 print -u${STATUS_FD} "global_progress 1.0"

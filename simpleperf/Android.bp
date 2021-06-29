@@ -158,14 +158,13 @@ cc_defaults {
         linux: {
             shared_libs: [
                 "libcutils",
+                "libdexfile_support",
                 "libevent",
-                "liblog",
                 "libprocinfo",
                 "libunwindstack",
             ],
             static_libs: [
                 "libc++fs",
-                "libdexfile_support",
             ],
         },
         host: {

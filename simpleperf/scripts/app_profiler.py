@@ -173,7 +173,8 @@ class NativeLibDownloader(object):
             target = self.dir_on_device + entry.name
 
             # Skip download if we have a file with the same name and size on device.
-            result, output = self.adb.run_and_return_output(['shell', 'ls', '-l', target])
+            result, output = self.adb.run_and_return_output(
+                ['shell', 'ls', '-l', target], log_output=False, log_stderr=False)
             if result:
                 items = output.split()
                 if len(items) > 5:
@@ -234,7 +235,7 @@ class ProfilerBase(object):
         """Start simpleperf reocrd process on device."""
         args = ['/data/local/tmp/simpleperf', 'record', '-o', '/data/local/tmp/perf.data',
                 self.args.record_options]
-        if self.adb.run(['shell', 'ls', NATIVE_LIBS_DIR_ON_DEVICE]):
+        if self.adb.run(['shell', 'ls', NATIVE_LIBS_DIR_ON_DEVICE, '>/dev/null', '2>&1']):
             args += ['--symfs', NATIVE_LIBS_DIR_ON_DEVICE]
         args += ['--log', self.args.log]
         args += target_args
@@ -325,7 +326,7 @@ class AppProfiler(ProfilerBase):
             adb_args = ['shell', 'cd /data/data/' + self.args.app + ' && ' + (' '.join(args))]
         else:
             adb_args = ['shell', 'run-as', self.args.app] + args
-        return self.adb.run_and_return_output(adb_args)
+        return self.adb.run_and_return_output(adb_args, log_output=False)
 
     def start(self):
         if self.args.activity or self.args.test:

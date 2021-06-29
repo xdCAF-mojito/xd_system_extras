@@ -21,14 +21,14 @@ import shutil
 import tempfile
 
 from binary_cache_builder import BinaryCacheBuilder
-from simpleperf_utils import ReadElf, remove, ToolFinder
+from simpleperf_utils import ReadElf, remove, find_tool_path
 from . test_utils import TestBase, TestHelper
 
 
 class TestBinaryCacheBuilder(TestBase):
     def test_copy_binaries_from_symfs_dirs(self):
         readelf = ReadElf(TestHelper.ndk_path)
-        strip = ToolFinder.find_tool_path('strip', arch='arm')
+        strip = find_tool_path('strip', arch='arm')
         self.assertIsNotNone(strip)
         symfs_dir = os.path.join(self.test_dir, 'symfs_dir')
         remove(symfs_dir)
